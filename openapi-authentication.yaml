@@ -1,0 +1,223 @@
+openapi: 3.0.3
+info:
+  title: video-processor-authentication-api
+  description: >
+    Login, renovação e logout de sessão. Valida credenciais lendo o item
+    DynamoDB `auth-credentials` (chave de partição `email`) escrito por
+    `video-processor-users-api` — ver
+    docs/superpowers/specs/2026-07-11-users-api-design.md, seção 2. Este
+    serviço tem acesso **somente leitura** a `auth-credentials`.
+
+    Refresh e logout são apoiados pela tabela DynamoDB própria
+    `auth-sessions` (partição `session_id`, TTL em `expires_at`), cujo
+    schema completo e regras de negócio estão formalizados em
+    docs/superpowers/specs/2026-07-12-authentication-api-design.md.
+  version: "1.0.0"
+servers:
+  - url: /sessions
+    description: Base path do serviço
+
+tags:
+  - name: sessions
+
+paths:
+  /:
+    post:
+      tags: [sessions]
+      summary: Login — valida email/senha e emite tokens
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: john.doe9@example.com
+              password: MockAdminPass!2025
+      responses:
+        '200':
+          description: Credenciais válidas — tokens emitidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                access_token: eyJhbGciOiJIUzI1NiIs...
+                refresh_token: eyJhbGciOiJIUzI1NiIs...
+        '400':
+          $ref: '#/components/responses/InvalidPayload'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+
+  /refresh:
+    post:
+      tags: [sessions]
+      summary: Renova o access token a partir de um refresh token válido
+      operationId: refreshSession
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Refresh token válido — novo access token emitido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPayload'
+        '401':
+          $ref: '#/components/responses/InvalidRefreshToken'
+
+  /logout:
+    delete:
+      tags: [sessions]
+      summary: Revoga a sessão associada ao access token informado
+      operationId: logout
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Sessão revogada — sem corpo de resposta
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Access token da própria sessão do usuário (não é o mesmo escopo do
+        bearerAuth "administrator" usado em openapi.yaml — aqui qualquer
+        sessão válida pode fazer logout de si mesma).
+
+  schemas:
+    Role:
+      type: string
+      enum: [administrator, user]
+
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required: [email, password]
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT HS256, TTL curto (ex. 15 min). Claims — ver seção "JWT claims" abaixo.
+        refresh_token:
+          type: string
+          description: JWT HS256 assinado com segredo distinto do access token, TTL longo.
+      required: [access_token, refresh_token]
+
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+      required: [refresh_token]
+
+    RefreshResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        expires_in:
+          type: integer
+          description: Segundos até a expiração do novo access token.
+      required: [access_token, expires_in]
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        code:
+          type: string
+          enum:
+            - INVALID_PAYLOAD
+            - INVALID_CREDENTIALS
+            - INVALID_REFRESH_TOKEN
+            - UNAUTHORIZED
+        message:
+          type: string
+      required: [status, code, message]
+
+  responses:
+    InvalidPayload:
+      description: Payload inválido (campo ausente ou mal formatado)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            code: INVALID_PAYLOAD
+            message: "password is required"
+    InvalidCredentials:
+      description: >
+        Email não encontrado OU senha incorreta — resposta intencionalmente
+        genérica nos dois casos, para não expor quais emails estão
+        cadastrados (diferente do esqueleto antigo, que distinguia "user not
+        found" de "invalid credentials"; ver regra de negócio 1 em
+        2026-07-12-authentication-api-design.md).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            code: INVALID_CREDENTIALS
+            message: "invalid email or password"
+    InvalidRefreshToken:
+      description: Refresh token inválido, expirado ou sessão revogada
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            code: INVALID_REFRESH_TOKEN
+            message: "invalid or expired refresh token"
+    Unauthorized:
+      description: Access token ausente, inválido ou expirado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            code: UNAUTHORIZED
+            message: "missing or invalid token"
+
+# JWT claims — schema completo e regras de negócio em
+# docs/superpowers/specs/2026-07-12-authentication-api-design.md (seções 2 e 4).
+#
+# Access token (TTL curto, ex. 15 min):
+#   sub: <userId>            iss: "video-processor"
+#   email: <email>           jti: <session_id>  (chave de auth-sessions)
+#   role: administrator|user exp / iat / nbf
+#
+# Refresh token (TTL longo, ex. 7 dias, sem rotação no refresh):
+#   sub: <userId>            jti: <session_id>  (mesmo valor do access token)
+#   exp / iat / nbf          (sem email/role — não necessários para renovar)
+#
+# auth-sessions (DynamoDB, dono deste serviço): PK session_id; atributos
+# user_id, email, role, refresh_token_hash (SHA-256 do refresh token — nunca
+# o token em texto puro), created_at, expires_at (atributo TTL do DynamoDB).
