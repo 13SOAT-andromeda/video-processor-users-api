@@ -110,7 +110,7 @@ O que **é** reaproveitável dali é só o **esqueleto de repositório** (organi
 
 | Do antigo (esqueleto, reaproveitar) | Propósito |
 |---|---|
-| `k8s/base/`, `k8s/overlays/aws/` | Manifests Kustomize — **uso ativo nesta fase** (atualizado 2026-07-13): backend deste serviço agora é container no EKS, não mais Lambda. Reaproveitar quase 1:1 (`deployment.yaml`, `service.yaml`, `hpa.yaml`, `kustomization.yaml`), trocando nome/imagem/porta conforme necessário. |
+| `k8s/base/`, `k8s/overlays/aws/` | Manifests Kustomize — **uso ativo nesta fase** (atualizado 2026-07-13): backend deste serviço agora é container no EKS, não mais Lambda. Reaproveitar quase 1:1 (`deployment.yaml`, `service.yaml`, `hpa.yaml`, `kustomization.yaml`), trocando nome/imagem/porta conforme necessário. **Sem `ingress.yaml`** (correção 2026-07-13, ver seção 8.2) — o roteamento é centralizado em `iac-video-processor-infra`. |
 | `test/e2e/` | Estrutura de teste e2e (Go) — adaptar para os 5 endpoints de `/users` |
 | `test/stress/stress-test.js` | Estrutura de teste de carga (k6/similar) — adaptar para o volume de uso administrativo |
 | `sonar-project.properties` | Config de qualidade de código — copiar e renomear `projectKey` |
@@ -122,13 +122,13 @@ O que **é** reaproveitável dali é só o **esqueleto de repositório** (organi
 **Não há mais `terraform/` local com `aws_lambda_function`.** O deploy deste serviço passa a ser:
 
 1. **Build + push de imagem** pro ECR provisionado em `iac-video-processor-infra` (repositório `video-processor-users-api`), no pipeline de CI deste repo — mesmo padrão do `tech-challenge-users/.github/workflows/deploy.yml`.
-2. **`kubectl apply -k k8s/overlays/aws/`** contra o cluster `video-processor-eks` (kubeconfig obtido via `aws eks update-kubeconfig`) — aplica Deployment, Service, HPA e o `Ingress` deste serviço.
-3. **`Ingress`** com path `/users` e annotation `alb.ingress.kubernetes.io/group.name: video-processor-shared` — funde com os `Ingress` das futuras `video-processor-api`/`links-generator` num único ALB gerenciado pelo AWS Load Balancer Controller (instalado em `iac-video-processor-infra`, seção 6 daquele spec). Esse é o recurso que o `data.aws_lb` do `iac-video-processor-gateway` acaba descobrindo.
+2. **`kubectl apply -k k8s/overlays/aws/`** contra o cluster `video-processor-eks` (kubeconfig obtido via `aws eks update-kubeconfig`) — aplica **Deployment, Service, HPA** deste serviço.
+3. **Sem `Ingress` próprio** (corrigido 2026-07-13 — a v1 desta seção propunha um `Ingress` por serviço com `group.name` compartilhado; revertido pelo mesmo motivo que o `tech-challenge` reverteu: sem dono único, um serviço esquecer a annotation gera um ALB extra e quebra a descoberta do gateway). O roteamento `/users/*` → este `Service` (porta 80) é uma regra de path no `Ingress` **centralizado**, mantido e aplicado por `iac-video-processor-infra` (seção 6.1 daquele spec) — este repo só precisa garantir que o `Service` se chame `video-processor-users-api-svc` na porta 80, que é o nome que aquele `Ingress` referencia.
 4. **Acesso ao DynamoDB (`auth-credentials`):** sem IAM role de execução (não existe mais Lambda aqui). Em vez disso, as credenciais temporárias da sessão do AWS Academy (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, vindas de secrets do GitHub Actions) são injetadas como Kubernetes `Secret` e consumidas pelo container via env vars lidas pelo AWS SDK — **mesmo padrão exato já usado por `tech-challenge-users`** (ver `.env.secrets`/`k8s/overlays/aws/kustomization.yaml` daquele repo). Isso evita precisar de IRSA/OIDC provider, que exigiria criar uma IAM role nova — não permitido sob a `LabRole` do Academy (ver `iac-video-processor-infra`, seção 5).
 5. **Acesso ao RDS:** via rede (security group do node group liberado para a porta 5432 do RDS), com credenciais de banco (usuário/senha) injetadas também via `Secret`, exatamente como já é feito hoje em `tech-challenge-users` (`DB_HOST`/`DB_PASSWORD` etc. gerados no pipeline a partir do endpoint do RDS).
 
 ### 8.3 Dependências
 
 - Depende de `iac-video-processor-data` (RDS `usersdb` + tabela DynamoDB `auth-credentials` existirem).
-- Depende de `iac-video-processor-infra` (cluster EKS `video-processor-eks`, VPC/subnets, ECR, AWS Load Balancer Controller já instalado) — atualizado 2026-07-13, antes dependia só de VPC/subnets pra um Lambda.
-- É pré-requisito de `video-processor-authentication-api` (que lê a tabela `auth-credentials` escrita por este serviço) e de `iac-video-processor-gateway` (que descobre o ALB criado a partir do `Ingress` deste serviço) — ver ordem de implementação na spec guarda-chuva, seção 8.
+- Depende de `iac-video-processor-infra` (cluster EKS `video-processor-eks`, VPC/subnets, ECR, AWS Load Balancer Controller **e o `Ingress` centralizado com a regra `/users` já apontando pro `Service` deste repo**, seção 6.1 daquele spec) — atualizado 2026-07-13, antes dependia só de VPC/subnets pra um Lambda.
+- É pré-requisito de `video-processor-authentication-api` (que lê a tabela `auth-credentials` escrita por este serviço). `iac-video-processor-gateway` depende do `Ingress`/ALB de `iac-video-processor-infra`, não deste repo diretamente (corrigido 2026-07-13) — ver ordem de implementação na spec guarda-chuva, seção 8.
