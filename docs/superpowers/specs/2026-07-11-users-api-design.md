@@ -35,7 +35,6 @@ type User struct {
 }
 
 type Repository interface {
-    FindByEmail(ctx context.Context, email string) (*User, error)
     FindByID(ctx context.Context, id string) (*User, error)
     List(ctx context.Context, limit, offset int) ([]User, error)
     Create(ctx context.Context, u *User, passwordHash string) error // grava RDS + DynamoDB
@@ -73,7 +72,7 @@ Resposta `201`: `{ "status": "success", "message": "User successfully created", 
 1. Hash de senha (`bcrypt.GenerateFromPassword`, cost 10-12) ao criar/atualizar — nunca aceitar senha já em hash vindo do client. Gravado **somente** no item DynamoDB (`auth-credentials`), nunca no RDS (ver seção 2).
 2. Validação de `email` (formato) e `document` (CPF — validar dígito verificador) antes de persistir.
 3. `DELETE /users/:id`: soft-delete opcional a decidir com o grupo; se um usuário com links ativos for removido, os links continuam acessíveis por `linkId` (não fazer cascade delete). Remoção precisa apagar tanto o registro RDS quanto o item DynamoDB (`auth-credentials`).
-4. Unicidade de `email` garantida por índice único no banco + checagem prévia amigável (`400 EMAIL_ALREADY_EXISTS` em vez de erro genérico de constraint).
+4. Unicidade de `email` garantida pelo índice único no banco (`uniqueIndex` no campo `Email`); o repositório deve capturar o erro de violação de constraint e devolvê-lo como erro de domínio que o handler mapeia para `400 EMAIL_ALREADY_EXISTS` — sem consulta prévia por e-mail (`FindByEmail` não existe nesta interface).
 5. Escrita em `Create`/`Update`: gravar primeiro no DynamoDB (fonte de verdade da credencial), depois no RDS. Se a escrita no RDS falhar após o DynamoDB ter sido gravado, retornar `500 INTERNAL_ERROR` e logar para investigação manual — risco aceito dado o volume administrativo baixo esperado (ver `2026-07-09-user-data-access-design.md`, seção 6).
 
 ## 5. Dependências
