@@ -1,6 +1,6 @@
 # Spec — video-processor-users-api
 
-**Data:** 2026-07-11
+**Data:** 2026-07-11 (atualizado 2026-07-13 — deploy muda de Lambda para container no EKS)
 **Status:** Draft — pronto para virar plano de implementação
 **Repo antigo de referência (esqueleto estrutural apenas, não domínio):** `tech-challenge-users`
 **Spec guarda-chuva:** `docs/superpowers/specs/2026-07-11-video-processor-auth-infra-migration-design.md` (workspace raiz)
@@ -82,11 +82,15 @@ Resposta `201`: `{ "status": "success", "message": "User successfully created", 
 - DynamoDB (tabela `auth-credentials`) — `PutItem`, `UpdateItem`, `DeleteItem`, `GetItem`.
 - Bibliotecas: `gorm.io/gorm`, `gorm.io/driver/postgres`, `github.com/aws/aws-sdk-go-v2/service/dynamodb`, `golang.org/x/crypto/bcrypt`, `github.com/gin-gonic/gin`, `github.com/awslabs/aws-lambda-go-api-proxy/gin`, `github.com/google/uuid`.
 
-## 6. Config Lambda / Terraform
+## 6. Config de deploy (EKS/container) — atualizado 2026-07-13
 
-- `memory 256MB`, `timeout 10s`, `arch arm64`.
-- Sem necessidade de reserved concurrency alta (uso administrativo, baixo volume).
-- IAM: acesso de rede ao RDS via security group (único serviço do domínio de usuário que precisa de VPC — validar sob a `LabRole` antes de implementar, ver `2026-07-09-user-data-access-design.md`, seção 6); `dynamodb:PutItem`/`UpdateItem`/`DeleteItem`/`GetItem` no ARN da tabela `auth-credentials`; sem acesso a S3/SQS/SNS.
+**Backend muda de Lambda para container no EKS** (ver spec guarda-chuva e `iac-video-processor-infra`, seção 1). Motivo: `users-api` passou a ser tratada como uma API "de verdade" (não function-as-a-service), no mesmo padrão de deploy que as futuras `video-processor-api`/`links-generator` vão usar — todas atrás do mesmo Application Load Balancer compartilhado (ver `iac-video-processor-gateway`, seção 7).
+
+- **Recursos do container** (mesma ordem de grandeza do antigo dimensionamento Lambda, adaptado pro padrão de `resources.requests/limits` do `tech-challenge-users/k8s/base/deployment.yaml`): `cpu: 50m` (request) / `200m` (limit), `memory: 64Mi` (request) / `128Mi` (limit). `replicas: 1` + HPA (mesmo padrão do repo antigo) — uso administrativo, baixo volume não justifica réplicas altas por padrão.
+- **Porta:** `8081` (mesma do `tech-challenge-users`, sem motivo pra mudar), `livenessProbe`/`readinessProbe` em `/health`.
+- **Sem necessidade de reserved concurrency** — esse conceito era específico de Lambda; não se aplica mais.
+- **Rede:** o pod precisa alcançar o RDS de `iac-video-processor-data` (porta 5432) — via security group do node group liberando egress pra VPC, não via ENI de VPC de Lambda como antes.
+- **Acesso ao DynamoDB (`auth-credentials`):** ver seção 8.2 — via credenciais de sessão do Academy injetadas como Kubernetes `Secret`, não via IAM role de execução (que não existe mais aqui, já que não há mais Lambda). Sem acesso a S3/SQS/SNS.
 
 ## 7. Testes
 
@@ -106,20 +110,25 @@ O que **é** reaproveitável dali é só o **esqueleto de repositório** (organi
 
 | Do antigo (esqueleto, reaproveitar) | Propósito |
 |---|---|
-| `k8s/base/`, `k8s/overlays/aws/` | Manifests Kustomize — só relevantes se este serviço um dia rodar fora de Lambda; manter por paridade de repo, mas sem uso ativo nesta fase (backend é Lambda) |
+| `k8s/base/`, `k8s/overlays/aws/` | Manifests Kustomize — **uso ativo nesta fase** (atualizado 2026-07-13): backend deste serviço agora é container no EKS, não mais Lambda. Reaproveitar quase 1:1 (`deployment.yaml`, `service.yaml`, `hpa.yaml`, `kustomization.yaml`), trocando nome/imagem/porta conforme necessário. |
 | `test/e2e/` | Estrutura de teste e2e (Go) — adaptar para os 5 endpoints de `/users` |
 | `test/stress/stress-test.js` | Estrutura de teste de carga (k6/similar) — adaptar para o volume de uso administrativo |
 | `sonar-project.properties` | Config de qualidade de código — copiar e renomear `projectKey` |
 | `docs/internal-api.md` | Padrão de documentação de API interna — adaptar ao contrato da seção 3 |
 | `internal/domain`, `internal/application/{ports,usecases,services}`, `internal/adapter/{http,database,config}` | **Só a organização de camadas**, não o conteúdo — o `user.go`/`services/user.go` de lá tem regras de outro domínio |
 
-### 8.2 Terraform local (`terraform/` neste repo)
+### 8.2 Deploy — Kustomize + ECR + credenciais via Kubernetes Secret (reescrito 2026-07-13)
 
-- `aws_lambda_function` — nome da função deve ser exatamente `video-processor-users-api` (contrato consumido por `iac-video-processor-gateway`).
-- IAM: `dynamodb:PutItem`/`UpdateItem`/`DeleteItem`/`GetItem` no ARN de `auth-credentials`; security group de rede permitindo saída para o RDS de `iac-video-processor-data` na porta 5432.
-- Config: `memory 256MB`, `timeout 10s`, `arch arm64`.
+**Não há mais `terraform/` local com `aws_lambda_function`.** O deploy deste serviço passa a ser:
+
+1. **Build + push de imagem** pro ECR provisionado em `iac-video-processor-infra` (repositório `video-processor-users-api`), no pipeline de CI deste repo — mesmo padrão do `tech-challenge-users/.github/workflows/deploy.yml`.
+2. **`kubectl apply -k k8s/overlays/aws/`** contra o cluster `video-processor-eks` (kubeconfig obtido via `aws eks update-kubeconfig`) — aplica Deployment, Service, HPA e o `Ingress` deste serviço.
+3. **`Ingress`** com path `/users` e annotation `alb.ingress.kubernetes.io/group.name: video-processor-shared` — funde com os `Ingress` das futuras `video-processor-api`/`links-generator` num único ALB gerenciado pelo AWS Load Balancer Controller (instalado em `iac-video-processor-infra`, seção 6 daquele spec). Esse é o recurso que o `data.aws_lb` do `iac-video-processor-gateway` acaba descobrindo.
+4. **Acesso ao DynamoDB (`auth-credentials`):** sem IAM role de execução (não existe mais Lambda aqui). Em vez disso, as credenciais temporárias da sessão do AWS Academy (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, vindas de secrets do GitHub Actions) são injetadas como Kubernetes `Secret` e consumidas pelo container via env vars lidas pelo AWS SDK — **mesmo padrão exato já usado por `tech-challenge-users`** (ver `.env.secrets`/`k8s/overlays/aws/kustomization.yaml` daquele repo). Isso evita precisar de IRSA/OIDC provider, que exigiria criar uma IAM role nova — não permitido sob a `LabRole` do Academy (ver `iac-video-processor-infra`, seção 5).
+5. **Acesso ao RDS:** via rede (security group do node group liberado para a porta 5432 do RDS), com credenciais de banco (usuário/senha) injetadas também via `Secret`, exatamente como já é feito hoje em `tech-challenge-users` (`DB_HOST`/`DB_PASSWORD` etc. gerados no pipeline a partir do endpoint do RDS).
 
 ### 8.3 Dependências
 
-- Depende de `iac-video-processor-data` (RDS `usersdb` + tabela DynamoDB `auth-credentials` existirem) e `iac-video-processor-infra` (VPC/subnets para o Lambda acessar o RDS).
-- É pré-requisito de `video-processor-authentication-api` (que lê a tabela `auth-credentials` escrita por este serviço) — ver ordem de implementação na spec guarda-chuva, seção 8.
+- Depende de `iac-video-processor-data` (RDS `usersdb` + tabela DynamoDB `auth-credentials` existirem).
+- Depende de `iac-video-processor-infra` (cluster EKS `video-processor-eks`, VPC/subnets, ECR, AWS Load Balancer Controller já instalado) — atualizado 2026-07-13, antes dependia só de VPC/subnets pra um Lambda.
+- É pré-requisito de `video-processor-authentication-api` (que lê a tabela `auth-credentials` escrita por este serviço) e de `iac-video-processor-gateway` (que descobre o ALB criado a partir do `Ingress` deste serviço) — ver ordem de implementação na spec guarda-chuva, seção 8.
