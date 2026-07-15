@@ -1,0 +1,51 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: "${DB_USER}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD}"
+      POSTGRES_DB: "${DB_NAME}"
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - users-api
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: "${ENV:-development}"
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      DD_AGENT_HOST: datadog-agent
+      DD_ENV: ${ENV:-local}
+      DD_SERVICE: ${DD_SERVICE:-video-processor-users-api}
+      DD_VERSION: ${API_VERSION:-1.0.0}
+    ports:
+      - "8080:8080"
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - users-api
+
+volumes:
+  db_data:
+
+networks:
+  users-api:
+    name: users-api
+    driver: bridge
