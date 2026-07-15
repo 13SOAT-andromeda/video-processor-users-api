@@ -1,6 +1,6 @@
 # Spec — video-processor-users-api
 
-**Data:** 2026-07-11 (atualizado 2026-07-13 — deploy muda de Lambda para container no EKS)
+**Data:** 2026-07-11 (atualizado 2026-07-13 — deploy muda de Lambda para container no EKS; renomeado 2026-07-15 — futuro serviço `video-processor-api` passa a se chamar `video-processor-converter`)
 **Status:** Draft — pronto para virar plano de implementação
 **Repo antigo de referência (esqueleto estrutural apenas, não domínio):** `tech-challenge-users`
 **Spec guarda-chuva:** `docs/superpowers/specs/2026-07-11-video-processor-auth-infra-migration-design.md` (workspace raiz)
@@ -84,7 +84,7 @@ Resposta `201`: `{ "status": "success", "message": "User successfully created", 
 
 ## 6. Config de deploy (EKS/container) — atualizado 2026-07-13
 
-**Backend muda de Lambda para container no EKS** (ver spec guarda-chuva e `iac-video-processor-infra`, seção 1). Motivo: `users-api` passou a ser tratada como uma API "de verdade" (não function-as-a-service), no mesmo padrão de deploy que as futuras `video-processor-api`/`links-generator` vão usar — todas atrás do mesmo Application Load Balancer compartilhado (ver `iac-video-processor-gateway`, seção 7).
+**Backend muda de Lambda para container no EKS** (ver spec guarda-chuva e `iac-video-processor-infra`, seção 1). Motivo: `users-api` passou a ser tratada como uma API "de verdade" (não function-as-a-service), no mesmo padrão de deploy que as futuras `video-processor-converter`/`links-generator` vão usar — todas atrás do mesmo Application Load Balancer compartilhado (ver `iac-video-processor-gateway`, seção 7).
 
 - **Recursos do container** (mesma ordem de grandeza do antigo dimensionamento Lambda, adaptado pro padrão de `resources.requests/limits` do `tech-challenge-users/k8s/base/deployment.yaml`): `cpu: 50m` (request) / `200m` (limit), `memory: 64Mi` (request) / `128Mi` (limit). `replicas: 1` + HPA (mesmo padrão do repo antigo) — uso administrativo, baixo volume não justifica réplicas altas por padrão.
 - **Porta:** `8081` (mesma do `tech-challenge-users`, sem motivo pra mudar), `livenessProbe`/`readinessProbe` em `/health`.
