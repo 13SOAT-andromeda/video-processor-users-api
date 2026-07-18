@@ -97,16 +97,16 @@ Segundo componente deste repositório: `cmd/worker/main.go`, processo Go de long
 ## 5. Dependências
 
 - RDS PostgreSQL (tabela `users`: `id`, `name`, `email`, `document`, `created_at`, `updated_at` — sem `password_hash`, `role`, `phone` ou `address`, ver seção 2).
-- Secrets Manager: `jwt-signing-key` (mesmo segredo de `authorizer`/`authentication` — novo para este serviço, ver seção 5.1).
+- Secrets Manager: `jwt-signing-key-${var.environment}` (mesmo segredo de `authorizer`/`authentication` — novo para este serviço, ver seção 5.1; nome atualizado — ver ADR-013, `docs/superpowers/specs/2026-07-18-jwt-secret-gateway-routes-design.md`).
 - Bibliotecas: `gorm.io/gorm`, `gorm.io/driver/postgres`, `github.com/golang-jwt/jwt/v5` (novo), `github.com/gin-gonic/gin`, `github.com/awslabs/aws-lambda-go-api-proxy/gin` (se aplicável ao adapter HTTP), `github.com/google/uuid`, `github.com/aws/aws-sdk-go-v2/service/sqs` (novo, ADR-012 — só usado pelo `cmd/worker`, não pelo `cmd/api`).
 
 **Removido nesta revisão:** `github.com/aws/aws-sdk-go-v2/service/dynamodb`, `golang.org/x/crypto/bcrypt` — este serviço não toca mais em nenhum dado de credencial nem faz hash de senha.
 
 ### 5.1 Validação de JWT própria (decisão de brainstorming, substitui repasse de headers pelo gateway)
 
-A integração `HTTP_PROXY` do `iac-video-processor-gateway` pro ALB não repassa automaticamente o `context` do `authorizer` (isso só acontece "de graça" em integrações Lambda proxy). Em vez de o gateway repassar `userId`/`role` como headers customizados (opção descartada — implicaria confiar cegamente na borda, quebrando o padrão de defesa em profundidade já usado no resto do projeto), `users-api` decodifica e valida o JWT por conta própria, com a mesma lib (`golang-jwt/jwt/v5`) e o mesmo segredo (`jwt-signing-key`, Secrets Manager) que `authorizer`/`authentication` já usam. É redundante com a validação do `authorizer` na borda por design — o `authorizer` continua servindo pra rejeitar requisições sem token válido antes de gastar um hop de rede até o ALB, mas `users-api` nunca confia cegamente nisso.
+A integração `HTTP_PROXY` do `iac-video-processor-gateway` pro ALB não repassa automaticamente o `context` do `authorizer` (isso só acontece "de graça" em integrações Lambda proxy). Em vez de o gateway repassar `userId`/`role` como headers customizados (opção descartada — implicaria confiar cegamente na borda, quebrando o padrão de defesa em profundidade já usado no resto do projeto), `users-api` decodifica e valida o JWT por conta própria, com a mesma lib (`golang-jwt/jwt/v5`) e o mesmo segredo (`jwt-signing-key-${var.environment}`, Secrets Manager) que `authorizer`/`authentication` já usam. É redundante com a validação do `authorizer` na borda por design — o `authorizer` continua servindo pra rejeitar requisições sem token válido antes de gastar um hop de rede até o ALB, mas `users-api` nunca confia cegamente nisso.
 
-**IAM**: `secretsmanager:GetSecretValue` no ARN de `jwt-signing-key` — via as mesmas credenciais de sessão/`LabRole` já injetadas no pod (sem recurso Terraform novo, já que `users-api` não tem execution role própria).
+**IAM**: `secretsmanager:GetSecretValue` no ARN de `jwt-signing-key-${var.environment}` — via as mesmas credenciais de sessão/`LabRole` já injetadas no pod (sem recurso Terraform novo, já que `users-api` não tem execution role própria).
 
 ## 6. Config de deploy (EKS/container)
 
@@ -115,7 +115,7 @@ A integração `HTTP_PROXY` do `iac-video-processor-gateway` pro ALB não repass
 - **Recursos do container**: `cpu: 50m` (request) / `200m` (limit), `memory: 64Mi` (request) / `128Mi` (limit). `replicas: 1` + HPA — uso administrativo/self-service, baixo volume não justifica réplicas altas por padrão.
 - **Porta:** `8081`, `livenessProbe`/`readinessProbe` em `/health`.
 - **Rede:** o pod precisa alcançar o RDS de `iac-video-processor-data` (porta 5432) via security group do node group.
-- **Credenciais AWS no pod (revisado 2026-07-16)**: injetadas via Kubernetes `Secret` (sessão do Academy) **apenas** para `secretsmanager:GetSecretValue` (segredo `jwt-signing-key`, ver seção 5.1) e para as credenciais de banco do RDS (`DB_HOST`/`DB_PASSWORD`, via `Secret` separado). **Sem acesso a DynamoDB ou SNS** — simplificação em relação à revisão anterior, que ainda precisava de credenciais AWS pra escrever em DynamoDB.
+- **Credenciais AWS no pod (revisado 2026-07-16)**: injetadas via Kubernetes `Secret` (sessão do Academy) **apenas** para `secretsmanager:GetSecretValue` (segredo `jwt-signing-key-${var.environment}`, ver seção 5.1) e para as credenciais de banco do RDS (`DB_HOST`/`DB_PASSWORD`, via `Secret` separado). **Sem acesso a DynamoDB ou SNS** — simplificação em relação à revisão anterior, que ainda precisava de credenciais AWS pra escrever em DynamoDB.
 
 **Atualizado 2026-07-18 (ADR-012) — segundo componente, worker:**
 
@@ -166,7 +166,7 @@ O que **é** reaproveitável dali é só o **esqueleto de repositório** (organi
 1. **Build + push de imagem** pro ECR provisionado em `iac-video-processor-infra` (repositório `video-processor-users-api`), no pipeline de CI deste repo.
 2. **`kubectl apply -k k8s/overlays/aws/`** contra o cluster `video-processor-eks` (kubeconfig via `aws eks update-kubeconfig`) — aplica **Deployment, Service, HPA** da API HTTP, e (ADR-012) o segundo `Deployment` do worker (`worker-deployment.yaml`, sem `Service`/`HPA`, ver seção 6).
 3. **Sem `Ingress` próprio** — o roteamento `/users/*` → este `Service` (porta 80) é uma regra de path no `Ingress` **centralizado**, mantido e aplicado por `iac-video-processor-infra` (seção 6.1 daquele spec) — este repo só precisa garantir que o `Service` se chame `video-processor-users-api-svc` na porta 80.
-4. **Acesso ao Secrets Manager (`jwt-signing-key`):** via credenciais temporárias da sessão do AWS Academy (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, vindas de secrets do GitHub Actions), injetadas como Kubernetes `Secret` e consumidas pelo container via env vars lidas pelo AWS SDK — mesmo padrão já usado por `tech-challenge-users`. Isso evita precisar de IRSA/OIDC provider, que exigiria criar uma IAM role nova — não permitido sob a `LabRole` do Academy (ver `iac-video-processor-infra`, seção 5).
+4. **Acesso ao Secrets Manager (`jwt-signing-key-${var.environment}`):** via credenciais temporárias da sessão do AWS Academy (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, vindas de secrets do GitHub Actions), injetadas como Kubernetes `Secret` e consumidas pelo container via env vars lidas pelo AWS SDK — mesmo padrão já usado por `tech-challenge-users`. Isso evita precisar de IRSA/OIDC provider, que exigiria criar uma IAM role nova — não permitido sob a `LabRole` do Academy (ver `iac-video-processor-infra`, seção 5).
 5. **Acesso ao RDS:** via rede (security group do node group liberado para a porta 5432 do RDS), com credenciais de banco (usuário/senha) injetadas também via `Secret`.
 
 ### 8.3 Dependências
