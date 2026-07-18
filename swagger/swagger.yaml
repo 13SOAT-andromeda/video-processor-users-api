@@ -2,15 +2,15 @@ openapi: 3.0.3
 info:
   title: video-processor-users-api
   description: >
-    CRUD de usuários. Todas as rotas exigem role `administrator` (checada a partir
-    do contexto injetado pelo authorizer e reconferida no handler). Ao criar ou
-    atualizar um usuário, a API grava tanto o perfil administrativo (RDS) quanto
-    a credencial de autenticação (DynamoDB `auth-credentials`) — ver
-    docs/superpowers/specs/2026-07-11-users-api-design.md, seções 2 e 4.
+    Serviço de Profile: dono exclusivo da tabela `users` no RDS PostgreSQL
+    (name, email, document). Sem nenhuma dependência síncrona de DynamoDB ou
+    do serviço `authentication`. Linhas em `users` são criadas exclusivamente
+    pelo worker reativo (evento `UserSignedUp` via SQS — ADR-012).
+    Ver docs/superpowers/specs/2026-07-11-users-api-design.md.
   version: "1.0.0"
 servers:
-  - url: /users
-    description: Base path do serviço (montado atrás do API Gateway/authorizer)
+  - url: /api
+    description: Base path da API
 
 tags:
   - name: users
@@ -19,10 +19,11 @@ security:
   - bearerAuth: []
 
 paths:
-  /:
+  /users:
     get:
       tags: [users]
       summary: Lista usuários (paginado)
+      description: Requer `role administrator`.
       operationId: listUsers
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -38,60 +39,27 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '400':
-          $ref: '#/components/responses/InvalidPayload'
-    post:
-      tags: [users]
-      summary: Cria um usuário (perfil + credencial de autenticação)
-      description: >
-        Grava o item de credencial no DynamoDB (`auth-credentials`) e o perfil
-        no RDS — ver seção 4, item 5, da spec (ordem de escrita e tratamento de
-        falha parcial).
-      operationId: createUser
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateUserRequest'
-            example:
-              name: John Doe
-              email: john.doe9@example.com
-              password: MockAdminPass!2025
-              role: user
-              document: 652.904.150-84
-      responses:
-        '201':
-          description: Usuário e credencial de autenticação criados
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateUserResponse'
-              example:
-                status: success
-                message: User successfully created
-                id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
-        '400':
-          $ref: '#/components/responses/InvalidPayload'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
 
-  /{id}:
+  /users/{id}:
     parameters:
       - $ref: '#/components/parameters/UserId'
     get:
       tags: [users]
       summary: Busca um usuário por ID
+      description: >
+        Liberado para `role administrator` (lê qualquer perfil) **ou** para o
+        dono do recurso (`:id` no path igual ao `sub` do JWT). Qualquer outro
+        caso retorna `403`.
       operationId: getUserById
       responses:
         '200':
-          description: Usuário encontrado
+          description: Perfil encontrado
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/InvalidPayload'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -100,11 +68,11 @@ paths:
           $ref: '#/components/responses/NotFound'
     put:
       tags: [users]
-      summary: Atualiza um usuário (perfil e, opcionalmente, credencial de autenticação)
+      summary: Atualiza nome e/ou documento de um usuário
       description: >
-        `password` é opcional: se omitido, a credencial de autenticação
-        existente não é alterada (ver assinatura `Update(ctx, u, passwordHash
-        *string)` na seção 2 da spec).
+        Requer `role administrator`. Aceita apenas `name` e `document` —
+        `email` é ignorado (campo fora do payload aceito). Não cria nem altera
+        credencial de autenticação.
       operationId: updateUser
       requestBody:
         required: true
@@ -112,9 +80,12 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/UpdateUserRequest'
+            example:
+              name: John Doe
+              document: 652.904.150-84
       responses:
         '200':
-          description: Usuário atualizado
+          description: Perfil atualizado
           content:
             application/json:
               schema:
@@ -129,14 +100,15 @@ paths:
           $ref: '#/components/responses/NotFound'
     delete:
       tags: [users]
-      summary: Remove um usuário (perfil e credencial de autenticação)
+      summary: Remove o perfil de um usuário
       description: >
-        Remove tanto o registro RDS quanto o item DynamoDB (`auth-credentials`)
-        — ver seção 4, item 3, da spec.
+        Requer `role administrator`. Remove apenas a linha no RDS — a
+        credencial em `auth-credentials` (DynamoDB) fica órfã (limitação
+        aceita nesta fase, ADR-011).
       operationId: deleteUser
       responses:
         '200':
-          description: Usuário removido
+          description: Perfil removido
           content:
             application/json:
               schema:
@@ -154,7 +126,9 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Token validado pelo authorizer; role `administrator` exigida.
+      description: >
+        JWT validado pelo próprio serviço (mesma lib e segredo do authorizer).
+        `role` e `sub` (userId) são extraídos do payload do token.
 
   parameters:
     UserId:
@@ -164,6 +138,7 @@ components:
       schema:
         type: string
         format: uuid
+      description: UUID do usuário (mesmo valor que `sub` no JWT do dono do recurso)
     Limit:
       name: limit
       in: query
@@ -183,13 +158,12 @@ components:
         minimum: 0
 
   schemas:
-    Role:
-      type: string
-      enum: [administrator, user]
-
     User:
       type: object
-      description: DTO de resposta — nunca inclui password_hash (ver seção 2 da spec).
+      description: >
+        DTO de resposta. Nunca inclui `password_hash`, `role` ou qualquer
+        dado de credencial — esses campos não existem no schema de `users`
+        (ADR-012).
       properties:
         id:
           type: string
@@ -199,8 +173,6 @@ components:
         email:
           type: string
           format: email
-        role:
-          $ref: '#/components/schemas/Role'
         document:
           type: string
           description: CPF, formato "000.000.000-00"
@@ -210,7 +182,7 @@ components:
         updated_at:
           type: string
           format: date-time
-      required: [id, name, email, role, document, created_at, updated_at]
+      required: [id, name, email, document, created_at, updated_at]
 
     UserListResponse:
       type: object
@@ -223,54 +195,19 @@ components:
           type: integer
         offset:
           type: integer
-
-    CreateUserRequest:
-      type: object
-      properties:
-        name:
-          type: string
-        email:
-          type: string
-          format: email
-        password:
-          type: string
-          description: Senha em texto plano — nunca aceitar hash já pronto vindo do client.
-        role:
-          $ref: '#/components/schemas/Role'
-        document:
-          type: string
-          description: CPF com dígito verificador válido
-      required: [name, email, password, role, document]
-
-    CreateUserResponse:
-      type: object
-      properties:
-        status:
-          type: string
-          example: success
-        message:
-          type: string
-          example: User successfully created
-        id:
-          type: string
-          format: uuid
-      required: [status, message, id]
+      required: [users, limit, offset]
 
     UpdateUserRequest:
       type: object
+      description: >
+        Apenas `name` e `document` são aceitos. Campos `email`, `password` e
+        `role` são ignorados se enviados.
       properties:
         name:
           type: string
-        email:
-          type: string
-          format: email
-        password:
-          type: string
-          description: Opcional — se omitido, a credencial de autenticação não é alterada.
-        role:
-          $ref: '#/components/schemas/Role'
         document:
           type: string
+          description: CPF, formato "000.000.000-00"
 
     UpdateUserResponse:
       type: object
@@ -307,32 +244,25 @@ components:
           type: string
           enum:
             - INVALID_PAYLOAD
-            - EMAIL_ALREADY_EXISTS
             - UNAUTHORIZED
             - FORBIDDEN
             - USER_NOT_FOUND
+            - INTERNAL_ERROR
         message:
           type: string
       required: [status, code, message]
 
   responses:
     InvalidPayload:
-      description: Payload inválido ou e-mail já cadastrado
+      description: Payload inválido
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-          examples:
-            invalid_payload:
-              value:
-                status: error
-                code: INVALID_PAYLOAD
-                message: "email: invalid format"
-            email_exists:
-              value:
-                status: error
-                code: EMAIL_ALREADY_EXISTS
-                message: "email already registered"
+          example:
+            status: error
+            code: INVALID_PAYLOAD
+            message: "invalid user id"
     Unauthorized:
       description: Token ausente ou inválido
       content:
@@ -344,7 +274,7 @@ components:
             code: UNAUTHORIZED
             message: "missing or invalid token"
     Forbidden:
-      description: Role diferente de administrator
+      description: Sem permissão (role insuficiente ou não é dono do recurso)
       content:
         application/json:
           schema:
@@ -352,7 +282,7 @@ components:
           example:
             status: error
             code: FORBIDDEN
-            message: "administrator role required"
+            message: "access denied"
     NotFound:
       description: Usuário não encontrado
       content:
