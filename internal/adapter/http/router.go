@@ -30,7 +30,7 @@ func NewRouter(cfg config.Config, logger *zap.Logger, userHandler handlers.UserH
 
 	corsConfig := cors.DefaultConfig()
 	corsConfig.AllowOrigins = cfg.Http.AllowedOrigins
-	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
+	corsConfig.AllowMethods = []string{"GET", "PUT", "DELETE", "OPTIONS"}
 	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization"}
 
 	router := gin.New()
@@ -70,15 +70,22 @@ func NewRouter(cfg config.Config, logger *zap.Logger, userHandler handlers.UserH
 	api.GET("/docs/*any", swagger.WrapHandler(swaggerFiles.Handler, swagger.URL("/api/swagger/swagger.yaml")))
 	api.StaticFile("/redoc", "./swagger/redoc.html")
 
-	protected := api.Group("/users")
-	protected.Use(middleware.AuthRequired(cfg.JWT.Secret))
-	protected.Use(middleware.RequireRole(domain.RoleAdministrator))
+	// Rotas autenticadas (qualquer JWT válido)
+	authed := api.Group("/users")
+	authed.Use(middleware.AuthRequired(cfg.JWT.Secret))
 	{
-		protected.GET("", userHandler.List)
-		protected.POST("", userHandler.Create)
-		protected.GET("/:id", userHandler.GetByID)
-		protected.PUT("/:id", userHandler.Update)
-		protected.DELETE("/:id", userHandler.Delete)
+		// GET /users/:id — admin ou dono do recurso (verificação no handler)
+		authed.GET("/:id", userHandler.GetByID)
+	}
+
+	// Rotas administrativas (role administrator obrigatória)
+	admin := api.Group("/users")
+	admin.Use(middleware.AuthRequired(cfg.JWT.Secret))
+	admin.Use(middleware.RequireRole(domain.RoleAdministrator))
+	{
+		admin.GET("", userHandler.List)
+		admin.PUT("/:id", userHandler.Update)
+		admin.DELETE("/:id", userHandler.Delete)
 	}
 
 	return &Router{router}

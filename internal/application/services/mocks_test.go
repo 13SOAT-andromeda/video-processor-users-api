@@ -8,11 +8,9 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// --- UserRepository mock ---
-
 type mockUserRepository struct{ mock.Mock }
 
-func (m *mockUserRepository) Create(ctx context.Context, u *domain.User) error {
+func (m *mockUserRepository) Upsert(ctx context.Context, u *domain.User) error {
 	args := m.Called(ctx, u)
 	return args.Error(0)
 }
@@ -41,27 +39,4 @@ func (m *mockUserRepository) List(ctx context.Context, limit, offset int) ([]*do
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]*domain.User), args.Error(1)
-}
-
-// --- AuthServiceClient mock ---
-
-type mockAuthClient struct{ mock.Mock }
-
-func (m *mockAuthClient) CreateCredential(ctx context.Context, email, passwordHash string, userID uuid.UUID, role domain.Role) error {
-	args := m.Called(ctx, email, passwordHash, userID, role)
-	return args.Error(0)
-}
-
-// --- Hasher mock ---
-
-type mockHasher struct{ mock.Mock }
-
-func (m *mockHasher) Hash(plain string) (string, error) {
-	args := m.Called(plain)
-	return args.String(0), args.Error(1)
-}
-
-func (m *mockHasher) Compare(hash, plain string) bool {
-	args := m.Called(hash, plain)
-	return args.Bool(0)
 }

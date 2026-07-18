@@ -6,20 +6,19 @@ import (
 	"log"
 
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/database/model/user"
-	"github.com/13SOAT-andromeda/video-processor-users-api/internal/domain"
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AdminSeedConfig struct {
 	Email    string
-	Password string
 	Document string
+	Name     string
 }
 
 func SeedAdmin(_ context.Context, db *gorm.DB, cfg AdminSeedConfig) error {
-	if cfg.Email == "" || cfg.Password == "" || cfg.Document == "" {
+	if cfg.Email == "" || cfg.Document == "" {
 		return nil
 	}
 
@@ -32,22 +31,24 @@ func SeedAdmin(_ context.Context, db *gorm.DB, cfg AdminSeedConfig) error {
 		return err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(cfg.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
+	name := cfg.Name
+	if name == "" {
+		name = "Administrator"
 	}
 
 	m := &user.Model{
-		ID:           uuid.New(),
-		Name:         "Administrator",
-		Email:        cfg.Email,
-		Document:     cfg.Document,
-		Role:         string(domain.RoleAdministrator),
-		PasswordHash: string(hash),
+		ID:       uuid.New(),
+		Name:     name,
+		Email:    cfg.Email,
+		Document: cfg.Document,
 	}
 
-	if err := db.Create(m).Error; err != nil {
-		log.Printf("seeder: admin already exists or error: %v", err)
+	err = db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "email"}},
+		DoNothing: true,
+	}).Create(m).Error
+	if err != nil {
+		log.Printf("seeder: %v", err)
 	}
 
 	return nil

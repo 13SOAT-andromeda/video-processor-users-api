@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/middleware"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/response"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/application/ports"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/domain"
@@ -20,30 +21,21 @@ func NewUserHandler(service ports.UserService) *UserHandler {
 	return &UserHandler{service: service}
 }
 
-func (h *UserHandler) Create(c *gin.Context) {
-	var req ports.CreateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.RespondError(c, http.StatusBadRequest, "INVALID_PAYLOAD", err.Error())
-		return
-	}
-
-	resp, err := h.service.Create(c.Request.Context(), req)
-	if err != nil {
-		if errors.Is(err, domain.ErrEmailAlreadyExists) {
-			response.RespondError(c, http.StatusBadRequest, "EMAIL_ALREADY_EXISTS", err.Error())
-			return
-		}
-		response.RespondError(c, http.StatusBadRequest, "INVALID_PAYLOAD", err.Error())
-		return
-	}
-
-	response.RespondCreated(c, resp)
-}
-
 func (h *UserHandler) GetByID(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "INVALID_PAYLOAD", "invalid user id")
+		return
+	}
+
+	role, _ := c.Get(middleware.ContextUserRole)
+	userID, _ := c.Get(middleware.ContextUserID)
+
+	isAdmin := domain.Role(role.(string)) == domain.RoleAdministrator
+	isOwner := userID.(string) == id.String()
+
+	if !isAdmin && !isOwner {
+		response.RespondError(c, http.StatusForbidden, "FORBIDDEN", "access denied")
 		return
 	}
 
@@ -53,7 +45,7 @@ func (h *UserHandler) GetByID(c *gin.Context) {
 			response.RespondError(c, http.StatusNotFound, "USER_NOT_FOUND", err.Error())
 			return
 		}
-		response.RespondError(c, http.StatusInternalServerError, "INVALID_PAYLOAD", err.Error())
+		response.RespondError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 
@@ -79,10 +71,6 @@ func (h *UserHandler) Update(c *gin.Context) {
 			response.RespondError(c, http.StatusNotFound, "USER_NOT_FOUND", err.Error())
 			return
 		}
-		if errors.Is(err, domain.ErrEmailAlreadyExists) {
-			response.RespondError(c, http.StatusBadRequest, "EMAIL_ALREADY_EXISTS", err.Error())
-			return
-		}
 		response.RespondError(c, http.StatusBadRequest, "INVALID_PAYLOAD", err.Error())
 		return
 	}
@@ -103,7 +91,7 @@ func (h *UserHandler) Delete(c *gin.Context) {
 			response.RespondError(c, http.StatusNotFound, "USER_NOT_FOUND", err.Error())
 			return
 		}
-		response.RespondError(c, http.StatusInternalServerError, "INVALID_PAYLOAD", err.Error())
+		response.RespondError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 
@@ -122,7 +110,7 @@ func (h *UserHandler) List(c *gin.Context) {
 
 	resp, err := h.service.List(c.Request.Context(), limit, offset)
 	if err != nil {
-		response.RespondError(c, http.StatusInternalServerError, "INVALID_PAYLOAD", err.Error())
+		response.RespondError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 

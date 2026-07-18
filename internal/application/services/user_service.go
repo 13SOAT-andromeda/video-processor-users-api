@@ -2,68 +2,18 @@ package services
 
 import (
 	"context"
-	"errors"
 
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/application/ports"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/domain"
-	"github.com/13SOAT-andromeda/video-processor-users-api/internal/domain/vo"
-	"github.com/13SOAT-andromeda/video-processor-users-api/pkg/encryption"
 	"github.com/google/uuid"
 )
 
 type userService struct {
-	repo       ports.UserRepository
-	authClient ports.AuthServiceClient
-	hasher     encryption.Hasher
+	repo ports.UserRepository
 }
 
-func NewUserService(repo ports.UserRepository, authClient ports.AuthServiceClient, hasher encryption.Hasher) ports.UserService {
-	return &userService{repo: repo, authClient: authClient, hasher: hasher}
-}
-
-func (s *userService) Create(ctx context.Context, req ports.CreateUserRequest) (*ports.CreateUserResponse, error) {
-	if _, err := vo.NewEmail(req.Email); err != nil {
-		return nil, err
-	}
-	if _, err := vo.NewDocument(req.Document); err != nil {
-		return nil, err
-	}
-	if _, err := vo.NewPassword(req.Password); err != nil {
-		return nil, err
-	}
-	if req.Role != domain.RoleAdministrator && req.Role != domain.RoleUser {
-		return nil, errors.New("invalid role")
-	}
-
-	hash, err := s.hasher.Hash(req.Password)
-	if err != nil {
-		return nil, err
-	}
-
-	u := &domain.User{
-		ID:           uuid.New(),
-		Name:         req.Name,
-		Email:        req.Email,
-		Document:     req.Document,
-		Role:         req.Role,
-		PasswordHash: hash,
-	}
-
-	if err := s.repo.Create(ctx, u); err != nil {
-		return nil, err
-	}
-
-	if err := s.authClient.CreateCredential(ctx, u.Email, u.PasswordHash, u.ID, u.Role); err != nil {
-		// rollback lógico
-		_ = s.repo.Delete(ctx, u.ID)
-		return nil, err
-	}
-
-	return &ports.CreateUserResponse{
-		Status:  "success",
-		Message: "User successfully created",
-		ID:      u.ID,
-	}, nil
+func NewUserService(repo ports.UserRepository) ports.UserService {
+	return &userService{repo: repo}
 }
 
 func (s *userService) GetByID(ctx context.Context, id uuid.UUID) (*ports.UserResponse, error) {
@@ -83,23 +33,8 @@ func (s *userService) Update(ctx context.Context, id uuid.UUID, req ports.Update
 	if req.Name != "" {
 		u.Name = req.Name
 	}
-	if req.Email != "" {
-		if _, err := vo.NewEmail(req.Email); err != nil {
-			return nil, err
-		}
-		u.Email = req.Email
-	}
 	if req.Document != "" {
-		if _, err := vo.NewDocument(req.Document); err != nil {
-			return nil, err
-		}
 		u.Document = req.Document
-	}
-	if req.Role != "" {
-		if req.Role != domain.RoleAdministrator && req.Role != domain.RoleUser {
-			return nil, errors.New("invalid role")
-		}
-		u.Role = req.Role
 	}
 
 	if err := s.repo.Update(ctx, u); err != nil {
@@ -143,7 +78,6 @@ func toUserResponse(u *domain.User) *ports.UserResponse {
 		ID:        u.ID,
 		Name:      u.Name,
 		Email:     u.Email,
-		Role:      u.Role,
 		Document:  u.Document,
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,

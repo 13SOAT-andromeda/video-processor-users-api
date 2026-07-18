@@ -10,6 +10,7 @@ import (
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/domain"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type userRepository struct {
@@ -20,19 +21,21 @@ func NewUserRepository(db *gorm.DB) ports.UserRepository {
 	return &userRepository{db: db}
 }
 
-func (r *userRepository) Create(ctx context.Context, u *domain.User) error {
+func (r *userRepository) Upsert(ctx context.Context, u *domain.User) error {
 	m := &user.Model{}
 	m.FromDomain(u)
-	if m.ID == uuid.Nil {
-		m.ID = uuid.New()
-	}
-	if err := r.db.WithContext(ctx).Create(m).Error; err != nil {
+	err := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name", "email", "document", "updated_at"}),
+		}).
+		Create(m).Error
+	if err != nil {
 		if isUniqueViolation(err) {
 			return domain.ErrEmailAlreadyExists
 		}
 		return err
 	}
-	u.ID = m.ID
 	u.CreatedAt = m.CreatedAt
 	u.UpdatedAt = m.UpdatedAt
 	return nil

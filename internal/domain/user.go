@@ -18,17 +18,10 @@ var ErrUserNotFound = errors.New("user not found")
 var ErrEmailAlreadyExists = errors.New("email already registered")
 
 type User struct {
-	ID           uuid.UUID
-	Name         string
-	Email        string
-	Document     string
-	Role         Role
-	PasswordHash string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	DeletedAt    *time.Time
-}
-
-func (u *User) ValidRole() bool {
-	return u.Role == RoleAdministrator || u.Role == RoleUser
+	ID        uuid.UUID
+	Name      string
+	Email     string
+	Document  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }

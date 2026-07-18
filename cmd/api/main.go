@@ -10,7 +10,6 @@ import (
 	"github.com/DataDog/dd-trace-go/v2/profiler"
 	"go.uber.org/zap"
 
-	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/authclient"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/config"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/database"
 	usermodel "github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/database/model/user"
@@ -18,7 +17,6 @@ import (
 	httpAdapter "github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/handlers"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/application/services"
-	"github.com/13SOAT-andromeda/video-processor-users-api/pkg/encryption"
 )
 
 func main() {
@@ -68,24 +66,15 @@ func main() {
 
 	if err = database.SeedAdmin(ctx, db.GetDB(), database.AdminSeedConfig{
 		Email:    cfg.AdminUser.Email,
-		Password: cfg.AdminUser.Password,
 		Document: cfg.AdminUser.Document,
 	}); err != nil {
 		sugar.Warnf("seed admin: %v", err)
 	}
 
-	// Adapters
 	userRepo := repository.NewUserRepository(db.GetDB())
-	authClient := authclient.NewAuthServiceClient(cfg.Auth.ServiceURL)
-	hasher := encryption.NewBcryptHasher()
-
-	// Services
-	userService := services.NewUserService(userRepo, authClient, hasher)
-
-	// Handlers
+	userService := services.NewUserService(userRepo)
 	userHandler := handlers.NewUserHandler(userService)
 
-	// Router
 	router := httpAdapter.NewRouter(*cfg, logger, *userHandler)
 
 	sugar.Infof("starting server on port %s", cfg.Http.Port)

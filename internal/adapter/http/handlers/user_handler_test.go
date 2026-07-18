@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/handlers"
+	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/middleware"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/application/ports"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/domain"
 	"github.com/gin-gonic/gin"
@@ -20,14 +21,6 @@ import (
 )
 
 type mockService struct{ mock.Mock }
-
-func (m *mockService) Create(ctx context.Context, req ports.CreateUserRequest) (*ports.CreateUserResponse, error) {
-	args := m.Called(ctx, req)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*ports.CreateUserResponse), args.Error(1)
-}
 
 func (m *mockService) GetByID(ctx context.Context, id uuid.UUID) (*ports.UserResponse, error) {
 	args := m.Called(ctx, id)
@@ -65,7 +58,6 @@ func setupHandlerTest(svc ports.UserService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := handlers.NewUserHandler(svc)
-	r.POST("/users", h.Create)
 	r.GET("/users", h.List)
 	r.GET("/users/:id", h.GetByID)
 	r.PUT("/users/:id", h.Update)
@@ -73,62 +65,64 @@ func setupHandlerTest(svc ports.UserService) *gin.Engine {
 	return r
 }
 
-func TestCreate_Handler_Success(t *testing.T) {
-	svc := &mockService{}
-	id := uuid.New()
-	svc.On("Create", mock.Anything, mock.Anything).Return(&ports.CreateUserResponse{
-		Status: "success", Message: "created", ID: id,
-	}, nil)
-
-	r := setupHandlerTest(svc)
-	body, _ := json.Marshal(map[string]string{
-		"name": "A", "email": "a@b.com", "password": "p", "role": "user", "document": "d",
-	})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusCreated, w.Code)
+// injectClaims populates middleware context keys directly (simulates AuthRequired middleware)
+func injectClaims(userID, role string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set(middleware.ContextUserID, userID)
+		c.Set(middleware.ContextUserRole, role)
+		c.Next()
+	}
 }
 
-func TestCreate_Handler_InvalidPayload(t *testing.T) {
-	svc := &mockService{}
-	r := setupHandlerTest(svc)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader([]byte("invalid")))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+func setupHandlerTestWithClaims(svc ports.UserService, userID, role string) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := handlers.NewUserHandler(svc)
+	r.Use(injectClaims(userID, role))
+	r.GET("/users", h.List)
+	r.GET("/users/:id", h.GetByID)
+	r.PUT("/users/:id", h.Update)
+	r.DELETE("/users/:id", h.Delete)
+	return r
 }
 
-func TestCreate_Handler_EmailExists(t *testing.T) {
-	svc := &mockService{}
-	svc.On("Create", mock.Anything, mock.Anything).Return(nil, domain.ErrEmailAlreadyExists)
-
-	r := setupHandlerTest(svc)
-	body, _ := json.Marshal(map[string]string{
-		"name": "A", "email": "a@b.com", "password": "p", "role": "user", "document": "d",
-	})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestGetByID_Handler_Success(t *testing.T) {
+func TestGetByID_Handler_Admin_CanReadAny(t *testing.T) {
 	svc := &mockService{}
 	id := uuid.New()
 	svc.On("GetByID", mock.Anything, id).Return(&ports.UserResponse{
-		ID: id, Name: "X", Email: "x@x.com", Role: domain.RoleUser,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		ID: id, Name: "X", Email: "x@x.com", CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}, nil)
 
-	r := setupHandlerTest(svc)
+	r := setupHandlerTestWithClaims(svc, uuid.New().String(), string(domain.RoleAdministrator))
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/users/"+id.String(), nil)
 	r.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestGetByID_Handler_Owner_CanReadOwn(t *testing.T) {
+	svc := &mockService{}
+	id := uuid.New()
+	svc.On("GetByID", mock.Anything, id).Return(&ports.UserResponse{
+		ID: id, Name: "X", Email: "x@x.com", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, nil)
+
+	r := setupHandlerTestWithClaims(svc, id.String(), string(domain.RoleUser))
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/users/"+id.String(), nil)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestGetByID_Handler_NonOwnerNonAdmin_Forbidden(t *testing.T) {
+	svc := &mockService{}
+	id := uuid.New()
+
+	r := setupHandlerTestWithClaims(svc, uuid.New().String(), string(domain.RoleUser))
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/users/"+id.String(), nil)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
 func TestGetByID_Handler_NotFound(t *testing.T) {
@@ -136,7 +130,7 @@ func TestGetByID_Handler_NotFound(t *testing.T) {
 	id := uuid.New()
 	svc.On("GetByID", mock.Anything, id).Return(nil, domain.ErrUserNotFound)
 
-	r := setupHandlerTest(svc)
+	r := setupHandlerTestWithClaims(svc, id.String(), string(domain.RoleUser))
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/users/"+id.String(), nil)
 	r.ServeHTTP(w, req)
@@ -145,7 +139,7 @@ func TestGetByID_Handler_NotFound(t *testing.T) {
 
 func TestGetByID_Handler_InvalidUUID(t *testing.T) {
 	svc := &mockService{}
-	r := setupHandlerTest(svc)
+	r := setupHandlerTestWithClaims(svc, uuid.New().String(), string(domain.RoleAdministrator))
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/users/not-a-uuid", nil)
 	r.ServeHTTP(w, req)
@@ -180,20 +174,6 @@ func TestUpdate_Handler_NotFound(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestUpdate_Handler_EmailExists(t *testing.T) {
-	svc := &mockService{}
-	id := uuid.New()
-	svc.On("Update", mock.Anything, id, mock.Anything).Return(nil, domain.ErrEmailAlreadyExists)
-
-	r := setupHandlerTest(svc)
-	body, _ := json.Marshal(map[string]string{"email": "taken@x.com"})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/users/"+id.String(), bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestDelete_Handler_Success(t *testing.T) {
