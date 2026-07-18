@@ -31,17 +31,9 @@ func newInMemRepo() *inMemRepo {
 	return &inMemRepo{users: make(map[uuid.UUID]*domain.User)}
 }
 
-func (r *inMemRepo) Create(_ context.Context, u *domain.User) error {
+func (r *inMemRepo) Upsert(_ context.Context, u *domain.User) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if u.ID == uuid.Nil {
-		u.ID = uuid.New()
-	}
-	for _, existing := range r.users {
-		if existing.Email == u.Email {
-			return domain.ErrEmailAlreadyExists
-		}
-	}
 	cp := *u
 	r.users[u.ID] = &cp
 	return nil
@@ -91,28 +83,13 @@ func (r *inMemRepo) List(_ context.Context, limit, offset int) ([]*domain.User, 
 	return all[offset:end], nil
 }
 
-// --- no-op auth client ---
-
-type noopAuth struct{}
-
-func (n *noopAuth) CreateCredential(_ context.Context, _, _ string, _ uuid.UUID, _ domain.Role) error {
-	return nil
-}
-
-// --- plain hasher for tests ---
-
-type plainHasher struct{}
-
-func (p *plainHasher) Hash(plain string) (string, error) { return "h:" + plain, nil }
-func (p *plainHasher) Compare(hash, plain string) bool   { return hash == "h:"+plain }
-
 // --- router factory ---
 
 func setupRouter(t *testing.T) (*httptest.Server, *inMemRepo) {
 	t.Helper()
 
 	repo := newInMemRepo()
-	svc := services.NewUserService(repo, &noopAuth{}, &plainHasher{})
+	svc := services.NewUserService(repo)
 	handler := handlers.NewUserHandler(svc)
 
 	cfg := config.Config{
@@ -127,18 +104,18 @@ func setupRouter(t *testing.T) (*httptest.Server, *inMemRepo) {
 	return srv, repo
 }
 
-// --- helpers ---
+// --- bearer helpers ---
 
-func adminBearer(t *testing.T) string {
+func adminBearer(t *testing.T, sub string) string {
 	t.Helper()
-	tok, err := generateJWT(testJWTSecret, "administrator")
+	tok, err := generateJWT(testJWTSecret, "administrator", sub)
 	assert.NoError(t, err)
 	return "Bearer " + tok
 }
 
-func userBearer(t *testing.T) string {
+func userBearer(t *testing.T, sub string) string {
 	t.Helper()
-	tok, err := generateJWT(testJWTSecret, "user")
+	tok, err := generateJWT(testJWTSecret, "user", sub)
 	assert.NoError(t, err)
 	return "Bearer " + tok
 }
@@ -172,6 +149,8 @@ func TestHealth(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+// GET /users — listagem
+
 func TestListUsers_Unauthorized(t *testing.T) {
 	srv, _ := setupRouter(t)
 	resp, err := http.Get(srv.URL + "/api/users")
@@ -181,108 +160,177 @@ func TestListUsers_Unauthorized(t *testing.T) {
 
 func TestListUsers_ForbiddenForNonAdmin(t *testing.T) {
 	srv, _ := setupRouter(t)
-	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users", userBearer(t), nil)
+	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users", userBearer(t, uuid.New().String()), nil)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
 
-func TestCreateUser_Success(t *testing.T) {
+func TestListUsers_Success(t *testing.T) {
 	srv, _ := setupRouter(t)
-
-	resp, err := doJSON(http.MethodPost, srv.URL+"/api/users", adminBearer(t), map[string]string{
-		"name": "John Doe", "email": "john@example.com",
-		"password": "Admin@123456", "role": "user", "document": "652.904.150-84",
-	})
+	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users", adminBearer(t, uuid.New().String()), nil)
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	var result map[string]interface{}
-	assert.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
-	assert.Equal(t, "success", result["status"])
-	assert.NotEmpty(t, result["id"])
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-func TestCreateUser_InvalidPassword(t *testing.T) {
+// GET /users/:id — leitura por posse ou admin
+
+func TestGetByID_Unauthorized(t *testing.T) {
 	srv, _ := setupRouter(t)
-	resp, err := doJSON(http.MethodPost, srv.URL+"/api/users", adminBearer(t), map[string]string{
-		"name": "Bad", "email": "bad@example.com",
-		"password": "weak", "role": "user", "document": "652.904.150-84",
-	})
+	resp, err := http.Get(srv.URL + "/api/users/" + uuid.New().String())
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
-func TestCreateUser_DuplicateEmail(t *testing.T) {
-	srv, _ := setupRouter(t)
-
-	payload := map[string]string{
-		"name": "User", "email": "dup@example.com",
-		"password": "Admin@123456", "role": "user", "document": "652.904.150-84",
-	}
-	r1, err := doJSON(http.MethodPost, srv.URL+"/api/users", adminBearer(t), payload)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusCreated, r1.StatusCode)
-
-	r2, err := doJSON(http.MethodPost, srv.URL+"/api/users", adminBearer(t), payload)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusBadRequest, r2.StatusCode)
-
-	var errBody map[string]interface{}
-	assert.NoError(t, json.NewDecoder(r2.Body).Decode(&errBody))
-	assert.Equal(t, "EMAIL_ALREADY_EXISTS", errBody["code"])
-}
-
-func TestGetByID_NotFound(t *testing.T) {
-	srv, _ := setupRouter(t)
-	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users/"+uuid.New().String(), adminBearer(t), nil)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-}
-
-func TestGetByID_Success(t *testing.T) {
+func TestGetByID_Admin_CanReadAnyProfile(t *testing.T) {
 	srv, repo := setupRouter(t)
 	id := uuid.New()
-	repo.users[id] = &domain.User{ID: id, Name: "Alice", Email: "alice@x.com", Role: domain.RoleUser, Document: "652.904.150-84"}
+	repo.users[id] = &domain.User{ID: id, Name: "Alice", Email: "alice@x.com", Document: "652.904.150-84"}
 
-	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users/"+id.String(), adminBearer(t), nil)
+	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users/"+id.String(), adminBearer(t, uuid.New().String()), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]interface{}
+	assert.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "Alice", body["name"])
+	assert.Equal(t, "652.904.150-84", body["document"])
+	// regressão: role não deve aparecer na resposta (ADR-012)
+	_, hasRole := body["role"]
+	assert.False(t, hasRole, "role must not be present in the response")
+}
+
+func TestGetByID_Owner_CanReadOwnProfile(t *testing.T) {
+	srv, repo := setupRouter(t)
+	id := uuid.New()
+	repo.users[id] = &domain.User{ID: id, Name: "Bob", Email: "bob@x.com", Document: "652.904.150-84"}
+
+	// sub do JWT == id do perfil
+	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users/"+id.String(), userBearer(t, id.String()), nil)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var user ports.UserResponse
 	assert.NoError(t, json.NewDecoder(resp.Body).Decode(&user))
-	assert.Equal(t, "Alice", user.Name)
+	assert.Equal(t, "Bob", user.Name)
 }
+
+func TestGetByID_NonOwnerNonAdmin_Forbidden(t *testing.T) {
+	srv, repo := setupRouter(t)
+	id := uuid.New()
+	repo.users[id] = &domain.User{ID: id, Name: "Carol", Email: "carol@x.com"}
+
+	// sub do JWT é diferente do id do perfil e role não é admin
+	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users/"+id.String(), userBearer(t, uuid.New().String()), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestGetByID_NotFound(t *testing.T) {
+	srv, _ := setupRouter(t)
+	id := uuid.New()
+	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users/"+id.String(), adminBearer(t, uuid.New().String()), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestGetByID_InvalidUUID(t *testing.T) {
+	srv, _ := setupRouter(t)
+	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users/not-a-uuid", adminBearer(t, uuid.New().String()), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// PUT /users/:id — atualização administrativa
 
 func TestUpdateUser_Success(t *testing.T) {
 	srv, repo := setupRouter(t)
 	id := uuid.New()
-	repo.users[id] = &domain.User{ID: id, Name: "Old", Email: "old@x.com", Role: domain.RoleUser, Document: "652.904.150-84"}
+	repo.users[id] = &domain.User{ID: id, Name: "Old", Email: "old@x.com", Document: "652.904.150-84"}
 
-	resp, err := doJSON(http.MethodPut, srv.URL+"/api/users/"+id.String(), adminBearer(t), map[string]string{"name": "New Name"})
+	resp, err := doJSON(http.MethodPut, srv.URL+"/api/users/"+id.String(), adminBearer(t, uuid.New().String()), map[string]string{
+		"name":     "New Name",
+		"document": "652.904.150-84",
+	})
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	updated, _ := repo.FindByID(context.Background(), id)
+	assert.Equal(t, "New Name", updated.Name)
 }
+
+func TestUpdateUser_EmailIsIgnored(t *testing.T) {
+	srv, repo := setupRouter(t)
+	id := uuid.New()
+	repo.users[id] = &domain.User{ID: id, Name: "Dave", Email: "dave@x.com", Document: "652.904.150-84"}
+
+	// regressão: PUT não deve aceitar alteração de email
+	resp, err := doJSON(http.MethodPut, srv.URL+"/api/users/"+id.String(), adminBearer(t, uuid.New().String()), map[string]string{
+		"email": "hacker@x.com",
+		"name":  "Dave",
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	unchanged, _ := repo.FindByID(context.Background(), id)
+	assert.Equal(t, "dave@x.com", unchanged.Email)
+}
+
+func TestUpdateUser_ForbiddenForNonAdmin(t *testing.T) {
+	srv, repo := setupRouter(t)
+	id := uuid.New()
+	repo.users[id] = &domain.User{ID: id, Name: "Eve", Email: "eve@x.com"}
+
+	resp, err := doJSON(http.MethodPut, srv.URL+"/api/users/"+id.String(), userBearer(t, id.String()), map[string]string{"name": "X"})
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestUpdateUser_NotFound(t *testing.T) {
+	srv, _ := setupRouter(t)
+	resp, err := doJSON(http.MethodPut, srv.URL+"/api/users/"+uuid.New().String(), adminBearer(t, uuid.New().String()), map[string]string{"name": "X"})
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// DELETE /users/:id — remoção administrativa
 
 func TestDeleteUser_Success(t *testing.T) {
 	srv, repo := setupRouter(t)
 	id := uuid.New()
 	repo.users[id] = &domain.User{ID: id, Name: "ToDelete"}
 
-	resp, err := doJSON(http.MethodDelete, srv.URL+"/api/users/"+id.String(), adminBearer(t), nil)
+	resp, err := doJSON(http.MethodDelete, srv.URL+"/api/users/"+id.String(), adminBearer(t, uuid.New().String()), nil)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	_, err = repo.FindByID(context.Background(), id)
+	assert.ErrorIs(t, err, domain.ErrUserNotFound)
 }
 
 func TestDeleteUser_NotFound(t *testing.T) {
 	srv, _ := setupRouter(t)
-	resp, err := doJSON(http.MethodDelete, srv.URL+"/api/users/"+uuid.New().String(), adminBearer(t), nil)
+	resp, err := doJSON(http.MethodDelete, srv.URL+"/api/users/"+uuid.New().String(), adminBearer(t, uuid.New().String()), nil)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
-func TestListUsers_Success(t *testing.T) {
-	srv, _ := setupRouter(t)
-	resp, err := doJSON(http.MethodGet, srv.URL+"/api/users", adminBearer(t), nil)
+func TestDeleteUser_ForbiddenForNonAdmin(t *testing.T) {
+	srv, repo := setupRouter(t)
+	id := uuid.New()
+	repo.users[id] = &domain.User{ID: id, Name: "Frank"}
+
+	resp, err := doJSON(http.MethodDelete, srv.URL+"/api/users/"+id.String(), userBearer(t, id.String()), nil)
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+// POST /users — não existe mais
+
+func TestCreateUser_RouteNotFound(t *testing.T) {
+	srv, _ := setupRouter(t)
+	resp, err := doJSON(http.MethodPost, srv.URL+"/api/users", adminBearer(t, uuid.New().String()), map[string]string{
+		"name": "X", "email": "x@x.com", "document": "652.904.150-84",
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
