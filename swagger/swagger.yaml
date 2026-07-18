@@ -1,0 +1,295 @@
+openapi: 3.0.3
+info:
+  title: video-processor-users-api
+  description: >
+    Serviço de Profile: dono exclusivo da tabela `users` no RDS PostgreSQL
+    (name, email, document). Sem nenhuma dependência síncrona de DynamoDB ou
+    do serviço `authentication`. Linhas em `users` são criadas exclusivamente
+    pelo worker reativo (evento `UserSignedUp` via SQS — ADR-012).
+    Ver docs/superpowers/specs/2026-07-11-users-api-design.md.
+  version: "1.0.0"
+servers:
+  - url: /api
+    description: Base path da API
+
+tags:
+  - name: users
+
+security:
+  - bearerAuth: []
+
+paths:
+  /users:
+    get:
+      tags: [users]
+      summary: Lista usuários (paginado)
+      description: Requer `role administrator`.
+      operationId: listUsers
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Lista paginada de usuários
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [users]
+      summary: Busca um usuário por ID
+      description: >
+        Liberado para `role administrator` (lê qualquer perfil) **ou** para o
+        dono do recurso (`:id` no path igual ao `sub` do JWT). Qualquer outro
+        caso retorna `403`.
+      operationId: getUserById
+      responses:
+        '200':
+          description: Perfil encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/InvalidPayload'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [users]
+      summary: Atualiza nome e/ou documento de um usuário
+      description: >
+        Requer `role administrator`. Aceita apenas `name` e `document` —
+        `email` é ignorado (campo fora do payload aceito). Não cria nem altera
+        credencial de autenticação.
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+            example:
+              name: John Doe
+              document: 652.904.150-84
+      responses:
+        '200':
+          description: Perfil atualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateUserResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPayload'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [users]
+      summary: Remove o perfil de um usuário
+      description: >
+        Requer `role administrator`. Remove apenas a linha no RDS — a
+        credencial em `auth-credentials` (DynamoDB) fica órfã (limitação
+        aceita nesta fase, ADR-011).
+      operationId: deleteUser
+      responses:
+        '200':
+          description: Perfil removido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteUserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        JWT validado pelo próprio serviço (mesma lib e segredo do authorizer).
+        `role` e `sub` (userId) são extraídos do payload do token.
+
+  parameters:
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: UUID do usuário (mesmo valor que `sub` no JWT do dono do recurso)
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+    Offset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+
+  schemas:
+    User:
+      type: object
+      description: >
+        DTO de resposta. Nunca inclui `password_hash`, `role` ou qualquer
+        dado de credencial — esses campos não existem no schema de `users`
+        (ADR-012).
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        document:
+          type: string
+          description: CPF, formato "000.000.000-00"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, name, email, document, created_at, updated_at]
+
+    UserListResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        limit:
+          type: integer
+        offset:
+          type: integer
+      required: [users, limit, offset]
+
+    UpdateUserRequest:
+      type: object
+      description: >
+        Apenas `name` e `document` são aceitos. Campos `email`, `password` e
+        `role` são ignorados se enviados.
+      properties:
+        name:
+          type: string
+        document:
+          type: string
+          description: CPF, formato "000.000.000-00"
+
+    UpdateUserResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: User successfully updated
+        id:
+          type: string
+          format: uuid
+      required: [status, message, id]
+
+    DeleteUserResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: User successfully deleted
+      required: [status, message]
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        code:
+          type: string
+          enum:
+            - INVALID_PAYLOAD
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - USER_NOT_FOUND
+            - INTERNAL_ERROR
+        message:
+          type: string
+      required: [status, code, message]
+
+  responses:
+    InvalidPayload:
+      description: Payload inválido
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            code: INVALID_PAYLOAD
+            message: "invalid user id"
+    Unauthorized:
+      description: Token ausente ou inválido
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            code: UNAUTHORIZED
+            message: "missing or invalid token"
+    Forbidden:
+      description: Sem permissão (role insuficiente ou não é dono do recurso)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            code: FORBIDDEN
+            message: "access denied"
+    NotFound:
+      description: Usuário não encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: error
+            code: USER_NOT_FOUND
+            message: "user not found"
