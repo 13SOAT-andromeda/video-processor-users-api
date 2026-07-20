@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-processor-users-api-worker
+  namespace: default
+  labels:
+    app: video-processor-users-api-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: video-processor-users-api-worker
+  template:
+    metadata:
+      labels:
+        app: video-processor-users-api-worker
+    spec:
+      containers:
+        - name: users-api-worker
+          image: video-processor-users-api:latest
+          command: ["/app/worker"]
+          env:
+            - name: DB_SSLMODE
+              value: require
+          envFrom:
+            - secretRef:
+                name: aws-session-credentials
+            - secretRef:
+                name: users-api-db-credentials
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

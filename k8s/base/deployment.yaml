@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-processor-users-api
+  namespace: default
+  labels:
+    app: video-processor-users-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: video-processor-users-api
+  template:
+    metadata:
+      labels:
+        app: video-processor-users-api
+    spec:
+      containers:
+        - name: users-api
+          image: video-processor-users-api:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ENV
+              value: production
+            - name: JWT_SIGNING_KEY_SECRET_NAME
+              value: jwt-signing-key-prod
+            - name: DB_SSLMODE
+              value: require
+          envFrom:
+            - secretRef:
+                name: aws-session-credentials
+            - secretRef:
+                name: users-api-db-credentials
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
