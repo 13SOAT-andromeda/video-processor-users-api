@@ -1,0 +1,131 @@
+name: Deploy Application to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  infra-check:
+    name: Infrastructure Pre-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Check ECR repository exists
+        run: |
+          if ! aws ecr describe-repositories \
+              --repository-names "video-processor-users-api-repo" \
+              --region "${{ secrets.AWS_REGION }}" > /dev/null 2>&1; then
+            echo "::error::ECR repository 'video-processor-users-api-repo' does not exist."
+            exit 1
+          fi
+
+      - name: Check RDS instance is available
+        run: |
+          STATUS=$(aws rds describe-db-instances \
+            --db-instance-identifier "${{ vars.AWS_RDS_USERS_NAME }}" \
+            --query 'DBInstances[0].DBInstanceStatus' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          if [ "$STATUS" != "available" ]; then
+            echo "::error::RDS instance '${{ vars.AWS_RDS_USERS_NAME }}' is not available (status: $STATUS)."
+            exit 1
+          fi
+
+  build:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    outputs:
+      ecr-registry: ${{ steps.login-ecr.outputs.registry }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        run: |
+          docker build \
+            -t ${{ steps.login-ecr.outputs.registry }}/video-processor-users-api-repo:latest \
+            .
+          docker push ${{ steps.login-ecr.outputs.registry }}/video-processor-users-api-repo:latest
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: [infra-check, build]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name eks-tech-challenge
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set ECR image in kustomize overlay
+        run: |
+          sed -i "s|ECR_IMAGE|${{ steps.login-ecr.outputs.registry }}/video-processor-users-api-repo|g" \
+            k8s/overlays/aws/kustomization.yaml
+
+      - name: Get RDS endpoint
+        id: rds
+        run: |
+          DB_ENDPOINT=$(aws rds describe-db-instances \
+            --db-instance-identifier "${{ vars.AWS_RDS_USERS_NAME }}" \
+            --query 'DBInstances[0].Endpoint.Address' \
+            --output text)
+          echo "endpoint=${DB_ENDPOINT}" >> $GITHUB_OUTPUT
+
+      - name: Generate .env.host
+        run: |
+          printf 'DB_HOST=%s\nDB_PORT=5432\nDB_USER=%s\nDB_NAME=%s\nDB_SSLMODE=require\nDB_TIMEZONE=America/Sao_Paulo\nHTTP_PORT=8081\nHTTP_ALLOWED_ORIGINS=*\nENV=production\nDD_SERVICE=video-processor-users\nDD_SITE=us5.datadoghq.com\n' \
+            "${{ steps.rds.outputs.endpoint }}" \
+            "${{ vars.AWS_RDS_DB_USER }}" \
+            "${{ vars.AWS_RDS_USERS_DB_NAME }}" \
+            > k8s/overlays/aws/.env.host
+
+      - name: Generate .env.secrets
+        run: |
+          printf 'DB_PASSWORD=%s\nJWT_SECRET=%s\nADMIN_EMAIL=%s\nADMIN_PASSWORD=%s\nADMIN_DOCUMENT=%s\nAWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_SESSION_TOKEN=%s\n' \
+            "${{ secrets.AWS_RDS_DB_PASSWORD }}" \
+            "${{ secrets.JWT_SECRET }}" \
+            "${{ secrets.USER_ADMIN_EMAIL }}" \
+            "${{ secrets.USER_ADMIN_PASSWORD }}" \
+            "${{ secrets.ADMIN_DOCUMENT }}" \
+            "${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            "${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            "${{ secrets.AWS_SESSION_TOKEN }}" \
+            > k8s/overlays/aws/.env.secrets
+
+      - name: Apply kustomize overlay to EKS
+        run: kubectl apply -k k8s/overlays/aws/
+
+      - name: Verify deployment rollout
+        run: kubectl rollout status deployment/video-processor-users --timeout=120s

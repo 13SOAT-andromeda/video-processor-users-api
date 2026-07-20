@@ -1,0 +1,44 @@
+name: Go SAST Report
+on:
+  pull_request:
+    branches: [main, develop, release/**, feature/**]
+
+jobs:
+  security-sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.25'
+
+      - name: Check Build
+        run: go build ./...
+
+      - name: Install SAST Security Tools
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "$GOPATH/bin" >> $GITHUB_PATH
+
+      - name: Run Gosec Security Scan
+        run: gosec -fmt=sarif -out=gosec-report.sarif ./... || true
+
+      - name: Run Vulnerability Check
+        run: govulncheck -json ./... > vulncheck-report.json 2>&1 || true
+
+      - name: Fix SARIF format
+        run: |
+          dotnet tool install --global Sarif.Multitool
+          export PATH="$PATH:/home/runner/.dotnet/tools"
+          sarif rewrite gosec-report.sarif --output valid-gosec-report.sarif
+
+      - name: Store All Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-sast-results
+          path: |
+            gosec-report.sarif
+            valid-gosec-report.sarif
+            vulncheck-report.json
