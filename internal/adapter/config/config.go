@@ -46,7 +46,7 @@ type AdminUserConfig struct {
 }
 
 type JWTConfig struct {
-	Secret string
+	SigningKeySecretName string
 }
 
 type DogStatsDConfig struct {
@@ -98,7 +98,7 @@ func Init() (*Config, error) {
 	}
 
 	jwt := &JWTConfig{
-		Secret: getEnv("JWT_SECRET", ""),
+		SigningKeySecretName: getEnv("JWT_SIGNING_KEY_SECRET_NAME", ""),
 	}
 
 	agentHost := getEnv("DD_AGENT_HOST", "")
