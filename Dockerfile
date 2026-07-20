@@ -8,6 +8,7 @@ RUN go mod download
 COPY . .
 
 RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /usr/local/bin/main ./cmd/api
+RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /usr/local/bin/worker ./cmd/worker
 
 FROM golang:1.25 AS development
 
@@ -40,9 +41,10 @@ WORKDIR /app
 RUN addgroup -S nonroot && adduser -S nonroot -G nonroot && apk add --no-cache ca-certificates curl
 
 COPY --from=production_builder /usr/local/bin/main /app/main
+COPY --from=production_builder /usr/local/bin/worker /app/worker
 COPY --from=production_builder /app/swagger /app/swagger
 
-RUN chmod +x /app/main
+RUN chmod +x /app/main /app/worker
 
 USER nonroot
 
