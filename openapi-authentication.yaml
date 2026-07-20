@@ -3,10 +3,10 @@ info:
   title: video-processor-authentication-api
   description: >
     Login, renovação e logout de sessão. Valida credenciais lendo o item
-    DynamoDB `auth-credentials` (chave de partição `email`) escrito por
-    `video-processor-users-api` — ver
-    docs/superpowers/specs/2026-07-11-users-api-design.md, seção 2. Este
-    serviço tem acesso **somente leitura** a `auth-credentials`.
+    DynamoDB `auth-credentials` (chave de partição `email`) — dono exclusivo
+    dessa tabela (ADR-012: o serviço de usuários não escreve mais em
+    `auth-credentials`). Ver
+    docs/superpowers/specs/2026-07-12-authentication-api-design.md.
 
     Refresh e logout são apoiados pela tabela DynamoDB própria
     `auth-sessions` (partição `session_id`, TTL em `expires_at`), cujo
