@@ -23,7 +23,7 @@ type Router struct {
 	*gin.Engine
 }
 
-func NewRouter(cfg config.Config, logger *zap.Logger, userHandler handlers.UserHandler) *Router {
+func NewRouter(cfg config.Config, logger *zap.Logger, userHandler handlers.UserHandler, jwtSecret string) *Router {
 	if cfg.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -72,7 +72,7 @@ func NewRouter(cfg config.Config, logger *zap.Logger, userHandler handlers.UserH
 
 	// Rotas autenticadas (qualquer JWT válido)
 	authed := api.Group("/users")
-	authed.Use(middleware.AuthRequired(cfg.JWT.Secret))
+	authed.Use(middleware.AuthRequired(jwtSecret))
 	{
 		// GET /users/:id — admin ou dono do recurso (verificação no handler)
 		authed.GET("/:id", userHandler.GetByID)
@@ -80,7 +80,7 @@ func NewRouter(cfg config.Config, logger *zap.Logger, userHandler handlers.UserH
 
 	// Rotas administrativas (role administrator obrigatória)
 	admin := api.Group("/users")
-	admin.Use(middleware.AuthRequired(cfg.JWT.Secret))
+	admin.Use(middleware.AuthRequired(jwtSecret))
 	admin.Use(middleware.RequireRole(domain.RoleAdministrator))
 	{
 		admin.GET("", userHandler.List)

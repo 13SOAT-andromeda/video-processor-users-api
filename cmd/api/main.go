@@ -8,6 +8,8 @@ import (
 
 	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 	"github.com/DataDog/dd-trace-go/v2/profiler"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"go.uber.org/zap"
 
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/config"
@@ -55,6 +57,24 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	// JWT signing key é buscado uma vez aqui, antes do servidor começar a
+	// aceitar requisições — nunca dentro de um handler por request — mesmo
+	// padrão de video-processor-authorizer/cmd/authorizer/main.go e
+	// video-processor-authentication-api/cmd/api/main.go.
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		sugar.Fatalf("failed to load AWS config: %v", err)
+	}
+	secretsClient := secretsmanager.NewFromConfig(awsCfg)
+	secretValue, err := secretsClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
+		SecretId: &cfg.JWT.SigningKeySecretName,
+	})
+	if err != nil {
+		sugar.Fatalf("failed to load jwt signing key: %v", err)
+	}
+	jwtSecret := *secretValue.SecretString
+
 	db, err := database.Init(ctx, *cfg.Database)
 	if err != nil {
 		sugar.Fatalf("failed to connect database: %v", err)
@@ -75,7 +95,7 @@ func main() {
 	userService := services.NewUserService(userRepo)
 	userHandler := handlers.NewUserHandler(userService)
 
-	router := httpAdapter.NewRouter(*cfg, logger, *userHandler)
+	router := httpAdapter.NewRouter(*cfg, logger, *userHandler, jwtSecret)
 
 	sugar.Infof("starting server on port %s", cfg.Http.Port)
 	if err = router.Server(":" + cfg.Http.Port); err != nil {

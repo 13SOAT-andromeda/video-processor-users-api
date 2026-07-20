@@ -95,10 +95,10 @@ func setupRouter(t *testing.T) (*httptest.Server, *inMemRepo) {
 	cfg := config.Config{
 		Env:  "test",
 		Http: &config.HttpConfig{AllowedOrigins: []string{"*"}, Port: "8080"},
-		JWT:  &config.JWTConfig{Secret: testJWTSecret},
+		JWT:  &config.JWTConfig{},
 	}
 
-	router := httpAdapter.NewRouter(cfg, zap.NewNop(), *handler)
+	router := httpAdapter.NewRouter(cfg, zap.NewNop(), *handler, testJWTSecret)
 	srv := httptest.NewServer(router.Engine)
 	t.Cleanup(srv.Close)
 	return srv, repo
