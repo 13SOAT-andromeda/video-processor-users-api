@@ -14,6 +14,9 @@ spec:
     metadata:
       labels:
         app: video-processor-users-api
+        tags.datadoghq.com/env: "production"
+        tags.datadoghq.com/service: "video-processor-users-api"
+        tags.datadoghq.com/version: "1.0.0"
     spec:
       containers:
         - name: users-api
@@ -27,6 +30,24 @@ spec:
               value: jwt-signing-key-prod
             - name: DB_SSLMODE
               value: require
+            # Datadog: DD_AGENT_HOST resolve o IP do node via Downward API,
+            # onde o Datadog Agent (DaemonSet) expõe APM/DogStatsD por node.
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: DD_SERVICE
+              value: "video-processor-users-api"
+            # Reaproveita o valor de ENV definido acima (dependent env var,
+            # exige que ENV já esteja definido antes na lista - ver nota).
+            - name: DD_ENV
+              value: "$(ENV)"
+            - name: DD_VERSION
+              value: "1.0.0"
+            - name: DD_LOGS_INJECTION
+              value: "true"
+            - name: DD_SITE
+              value: "datadoghq.com"
           envFrom:
             - secretRef:
                 name: aws-session-credentials

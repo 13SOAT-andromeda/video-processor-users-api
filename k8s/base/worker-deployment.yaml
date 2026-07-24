@@ -14,14 +14,35 @@ spec:
     metadata:
       labels:
         app: video-processor-users-api-worker
+        tags.datadoghq.com/env: "production"
+        tags.datadoghq.com/service: "video-processor-users-api-worker"
+        tags.datadoghq.com/version: "1.0.0"
     spec:
       containers:
         - name: users-api-worker
           image: video-processor-users-api:latest
           command: ["/app/worker"]
           env:
+            # ENV não existia aqui antes; adicionado para manter paridade com
+            # deployment.yaml e permitir o dependent env var DD_ENV abaixo.
+            - name: ENV
+              value: production
             - name: DB_SSLMODE
               value: require
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: DD_SERVICE
+              value: "video-processor-users-api-worker"
+            - name: DD_ENV
+              value: "$(ENV)"
+            - name: DD_VERSION
+              value: "1.0.0"
+            - name: DD_LOGS_INJECTION
+              value: "true"
+            - name: DD_SITE
+              value: "datadoghq.com"
           envFrom:
             - secretRef:
                 name: aws-session-credentials
