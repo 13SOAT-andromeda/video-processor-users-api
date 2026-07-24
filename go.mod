@@ -3,6 +3,7 @@ module github.com/13SOAT-andromeda/video-processor-users-api
 go 1.25.0
 
 require (
+	github.com/DataDog/datadog-go/v5 v5.6.0
 	github.com/DataDog/dd-trace-go/contrib/gin-gonic/gin/v2 v2.6.0
 	github.com/DataDog/dd-trace-go/contrib/gorm.io/gorm.v1/v2 v2.6.0
 	github.com/DataDog/dd-trace-go/v2 v2.6.0
@@ -34,7 +35,6 @@ require (
 	github.com/DataDog/datadog-agent/pkg/util/log v0.71.0 // indirect
 	github.com/DataDog/datadog-agent/pkg/util/scrubber v0.71.0 // indirect
 	github.com/DataDog/datadog-agent/pkg/version v0.71.0 // indirect
-	github.com/DataDog/datadog-go/v5 v5.6.0 // indirect
 	github.com/DataDog/go-libddwaf/v4 v4.8.0 // indirect
 	github.com/DataDog/go-runtime-metrics-internal v0.0.4-0.20250721125240-fdf1ef85b633 // indirect
 	github.com/DataDog/go-sqllexer v0.1.8 // indirect

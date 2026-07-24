@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 	"github.com/DataDog/dd-trace-go/v2/profiler"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -18,6 +19,7 @@ import (
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/database/repository"
 	httpAdapter "github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/handlers"
+	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/metrics"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/application/services"
 )
 
@@ -91,9 +93,16 @@ func main() {
 		sugar.Warnf("seed admin: %v", err)
 	}
 
+	ddStatsd, err := metrics.New(cfg.DogStatsD)
+	if err != nil {
+		sugar.Warnf("datadog statsd client unavailable: %v", err)
+		ddStatsd = &statsd.NoOpClient{}
+	}
+	defer func() { _ = ddStatsd.Close() }()
+
 	userRepo := repository.NewUserRepository(db.GetDB())
 	userService := services.NewUserService(userRepo)
-	userHandler := handlers.NewUserHandler(userService)
+	userHandler := handlers.NewUserHandler(userService, ddStatsd)
 
 	router := httpAdapter.NewRouter(*cfg, logger, *userHandler, jwtSecret)
 

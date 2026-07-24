@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/handlers"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/middleware"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/application/ports"
@@ -57,7 +58,7 @@ func (m *mockService) List(ctx context.Context, limit, offset int) (*ports.UserL
 func setupHandlerTest(svc ports.UserService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := handlers.NewUserHandler(svc)
+	h := handlers.NewUserHandler(svc, &statsd.NoOpClient{})
 	r.GET("/users", h.List)
 	r.GET("/users/:id", h.GetByID)
 	r.PUT("/users/:id", h.Update)
@@ -77,7 +78,7 @@ func injectClaims(userID, role string) gin.HandlerFunc {
 func setupHandlerTestWithClaims(svc ports.UserService, userID, role string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := handlers.NewUserHandler(svc)
+	h := handlers.NewUserHandler(svc, &statsd.NoOpClient{})
 	r.Use(injectClaims(userID, role))
 	r.GET("/users", h.List)
 	r.GET("/users/:id", h.GetByID)

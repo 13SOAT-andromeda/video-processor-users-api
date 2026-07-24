@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/middleware"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/response"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/application/ports"
@@ -15,10 +16,11 @@ import (
 
 type UserHandler struct {
 	service ports.UserService
+	statsd  statsd.ClientInterface
 }
 
-func NewUserHandler(service ports.UserService) *UserHandler {
-	return &UserHandler{service: service}
+func NewUserHandler(service ports.UserService, statsdClient statsd.ClientInterface) *UserHandler {
+	return &UserHandler{service: service, statsd: statsdClient}
 }
 
 func (h *UserHandler) GetByID(c *gin.Context) {
@@ -68,13 +70,16 @@ func (h *UserHandler) Update(c *gin.Context) {
 	resp, err := h.service.Update(c.Request.Context(), id, req)
 	if err != nil {
 		if errors.Is(err, domain.ErrUserNotFound) {
+			_ = h.statsd.Count("video_processor.users.updated", 1, []string{"result:failure", "reason:not_found"}, 1)
 			response.RespondError(c, http.StatusNotFound, "USER_NOT_FOUND", err.Error())
 			return
 		}
+		_ = h.statsd.Count("video_processor.users.updated", 1, []string{"result:failure", "reason:invalid_payload"}, 1)
 		response.RespondError(c, http.StatusBadRequest, "INVALID_PAYLOAD", err.Error())
 		return
 	}
 
+	_ = h.statsd.Count("video_processor.users.updated", 1, []string{"result:success"}, 1)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -88,13 +93,16 @@ func (h *UserHandler) Delete(c *gin.Context) {
 	resp, err := h.service.Delete(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, domain.ErrUserNotFound) {
+			_ = h.statsd.Count("video_processor.users.deleted", 1, []string{"result:failure", "reason:not_found"}, 1)
 			response.RespondError(c, http.StatusNotFound, "USER_NOT_FOUND", err.Error())
 			return
 		}
+		_ = h.statsd.Count("video_processor.users.deleted", 1, []string{"result:failure", "reason:internal_error"}, 1)
 		response.RespondError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 
+	_ = h.statsd.Count("video_processor.users.deleted", 1, []string{"result:success"}, 1)
 	c.JSON(http.StatusOK, resp)
 }
 

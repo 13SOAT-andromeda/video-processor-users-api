@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/DataDog/datadog-go/v5/statsd"
+
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/config"
 	httpAdapter "github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/handlers"
@@ -90,7 +92,7 @@ func setupRouter(t *testing.T) (*httptest.Server, *inMemRepo) {
 
 	repo := newInMemRepo()
 	svc := services.NewUserService(repo)
-	handler := handlers.NewUserHandler(svc)
+	handler := handlers.NewUserHandler(svc, &statsd.NoOpClient{})
 
 	cfg := config.Config{
 		Env:  "test",

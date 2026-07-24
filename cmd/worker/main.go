@@ -9,10 +9,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DataDog/datadog-go/v5/statsd"
+
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/config"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/database"
 	usermodel "github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/database/model/user"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/database/repository"
+	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/metrics"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/domain"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -58,6 +61,13 @@ func main() {
 
 	repo := repository.NewUserRepository(db.GetDB())
 
+	ddStatsd, err := metrics.New(cfg.DogStatsD)
+	if err != nil {
+		log.Printf("datadog statsd client unavailable: %v", err)
+		ddStatsd = &statsd.NoOpClient{}
+	}
+	defer func() { _ = ddStatsd.Close() }()
+
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
 		log.Fatalf("failed to load AWS config: %v", err)
@@ -86,7 +96,7 @@ func main() {
 		}
 
 		for _, msg := range out.Messages {
-			if err := processMessage(ctx, msg, repo); err != nil {
+			if err := processMessage(ctx, msg, repo, ddStatsd); err != nil {
 				log.Printf("process error (will not delete): %v", err)
 				continue
 			}
@@ -102,29 +112,38 @@ func main() {
 
 func processMessage(ctx context.Context, msg types.Message, repo interface {
 	Upsert(context.Context, *domain.User) error
-}) error {
+}, ddStatsd statsd.ClientInterface) error {
 	var envelope snsEnvelope
 	if err := json.Unmarshal([]byte(aws.ToString(msg.Body)), &envelope); err != nil {
 		log.Printf("malformed SNS envelope, skipping: %v", err)
+		_ = ddStatsd.Count("video_processor.users.registered", 1, []string{"result:failure", "reason:malformed_envelope"}, 1)
 		return nil
 	}
 
 	var event userSignedUpEvent
 	if err := json.Unmarshal([]byte(envelope.Message), &event); err != nil {
 		log.Printf("malformed UserSignedUp event, skipping: %v", err)
+		_ = ddStatsd.Count("video_processor.users.registered", 1, []string{"result:failure", "reason:malformed_event"}, 1)
 		return nil
 	}
 
 	id, err := uuid.Parse(event.UserID)
 	if err != nil {
 		log.Printf("invalid user_id %q, skipping: %v", event.UserID, err)
+		_ = ddStatsd.Count("video_processor.users.registered", 1, []string{"result:failure", "reason:invalid_user_id"}, 1)
 		return nil
 	}
 
-	return repo.Upsert(ctx, &domain.User{
+	if err := repo.Upsert(ctx, &domain.User{
 		ID:       id,
 		Name:     event.Name,
 		Email:    event.Email,
 		Document: event.Document,
-	})
+	}); err != nil {
+		_ = ddStatsd.Count("video_processor.users.registered", 1, []string{"result:failure", "reason:upsert_error"}, 1)
+		return err
+	}
+
+	_ = ddStatsd.Count("video_processor.users.registered", 1, []string{"result:success"}, 1)
+	return nil
 }
