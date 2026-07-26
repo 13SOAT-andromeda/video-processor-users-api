@@ -10,9 +10,9 @@ import (
 
 func TestInit_Defaults(t *testing.T) {
 	// unset any existing vars that might interfere
-	os.Unsetenv("DB_HOST")
-	os.Unsetenv("JWT_SIGNING_KEY_SECRET_NAME")
-	os.Unsetenv("DD_AGENT_HOST")
+	_ = os.Unsetenv("DB_HOST")
+	_ = os.Unsetenv("JWT_SIGNING_KEY_SECRET_NAME")
+	_ = os.Unsetenv("DD_AGENT_HOST")
 
 	cfg, err := config.Init()
 	assert.NoError(t, err)
@@ -22,17 +22,17 @@ func TestInit_Defaults(t *testing.T) {
 }
 
 func TestInit_WithEnvVars(t *testing.T) {
-	os.Setenv("DB_HOST", "myhost")
-	os.Setenv("JWT_SIGNING_KEY_SECRET_NAME", "jwt-signing-key-prod")
-	os.Setenv("HTTP_PORT", "9090")
-	os.Setenv("AUTH_SERVICE_URL", "http://auth:8081")
-	os.Setenv("DD_AGENT_HOST", "dd-agent")
+	_ = os.Setenv("DB_HOST", "myhost")
+	_ = os.Setenv("JWT_SIGNING_KEY_SECRET_NAME", "jwt-signing-key-prod")
+	_ = os.Setenv("HTTP_PORT", "9090")
+	_ = os.Setenv("AUTH_SERVICE_URL", "http://auth:8081")
+	_ = os.Setenv("DD_AGENT_HOST", "dd-agent")
 	defer func() {
-		os.Unsetenv("DB_HOST")
-		os.Unsetenv("JWT_SIGNING_KEY_SECRET_NAME")
-		os.Unsetenv("HTTP_PORT")
-		os.Unsetenv("AUTH_SERVICE_URL")
-		os.Unsetenv("DD_AGENT_HOST")
+		_ = os.Unsetenv("DB_HOST")
+		_ = os.Unsetenv("JWT_SIGNING_KEY_SECRET_NAME")
+		_ = os.Unsetenv("HTTP_PORT")
+		_ = os.Unsetenv("AUTH_SERVICE_URL")
+		_ = os.Unsetenv("DD_AGENT_HOST")
 	}()
 
 	cfg, err := config.Init()

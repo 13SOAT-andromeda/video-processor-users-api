@@ -74,7 +74,7 @@ func main() {
 	}
 	sqsClient := sqs.NewFromConfig(awsCfg)
 
-	log.Println("worker started, polling", queueURL)
+	log.Printf("worker started, polling %q\n", queueURL)
 
 	for {
 		select {
