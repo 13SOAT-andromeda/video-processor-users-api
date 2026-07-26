@@ -74,7 +74,11 @@ func main() {
 	}
 	sqsClient := sqs.NewFromConfig(awsCfg)
 
-	log.Printf("worker started, polling %q\n", queueURL)
+	// queueURL is operator-set deployment config (Terraform env var), not
+	// attacker-controlled input — gosec's taint analysis can't tell the
+	// difference, so this is a justified exception rather than a real
+	// log-injection risk.
+	log.Printf("worker started, polling %q\n", queueURL) //nolint:gosec // G706
 
 	for {
 		select {
