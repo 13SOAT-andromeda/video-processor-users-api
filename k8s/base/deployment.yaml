@@ -46,8 +46,14 @@ spec:
               value: "1.0.0"
             - name: DD_LOGS_INJECTION
               value: "true"
+            # us5, não o default genérico do Datadog — este projeto usa
+            # us5.datadoghq.com (ver iac-video-processor-infra/prod/datadog.tf,
+            # mesma correção). O ponto que realmente importa para
+            # traces/logs é o site do Cluster Agent, mas mantemos este valor
+            # consistente para o caso de o app-level tracer/profiler
+            # precisar falar direto com o Datadog (modo agentless).
             - name: DD_SITE
-              value: "datadoghq.com"
+              value: "us5.datadoghq.com"
           envFrom:
             - secretRef:
                 name: aws-session-credentials
