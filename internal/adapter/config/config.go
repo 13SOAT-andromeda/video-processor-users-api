@@ -9,15 +9,15 @@ import (
 )
 
 type Config struct {
-	Database    *DataBaseConfig
-	Http        *HttpConfig
-	Auth        *AuthConfig
-	AdminUser   *AdminUserConfig
-	JWT         *JWTConfig
-	DogStatsD   *DogStatsDConfig
-	Env         string
-	Version     string
-	Service     string
+	Database  *DataBaseConfig
+	Http      *HttpConfig
+	Auth      *AuthConfig
+	AdminUser *AdminUserConfig
+	JWT       *JWTConfig
+	DogStatsD *DogStatsDConfig
+	Env       string
+	Version   string
+	Service   string
 }
 
 type DataBaseConfig struct {

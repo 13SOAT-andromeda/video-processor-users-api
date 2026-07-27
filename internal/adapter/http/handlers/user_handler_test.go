@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/handlers"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/adapter/http/middleware"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/application/ports"
 	"github.com/13SOAT-andromeda/video-processor-users-api/internal/domain"
+	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
